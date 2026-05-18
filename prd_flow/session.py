@@ -22,7 +22,10 @@ class SessionState:
 
 def save_session(state: SessionState, path: Path) -> None:
     """Save session state to a JSON file."""
-    path.write_text(json.dumps(asdict(state), indent=2, ensure_ascii=False))
+    path.write_text(
+        json.dumps(asdict(state), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def load_session(path: Path) -> SessionState:

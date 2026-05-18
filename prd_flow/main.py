@@ -9,12 +9,7 @@ from prd_flow.mode_detector import Mode, detect_mode
 from prd_flow.output.assembler import assemble_prd
 from prd_flow.quality.smart_req import check_smart_req
 from prd_flow.session import SessionState, save_session
-
-
-def generate_doc_id(project_name: str) -> str:
-    """Generate document ID from project name."""
-    base = project_name.upper().replace(" ", "-").replace("_", "-")
-    return f"{base}-v1.0"
+from prd_flow.utils import generate_doc_id
 
 
 def run_root_mode(args: argparse.Namespace) -> None:

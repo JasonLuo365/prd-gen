@@ -3,6 +3,7 @@ from datetime import datetime
 
 from prd_flow.phases.base import Phase
 from prd_flow.session import SessionState
+from prd_flow.utils import generate_doc_id
 
 
 class FrontmatterPhase(Phase):
@@ -27,7 +28,7 @@ class FrontmatterPhase(Phase):
         tags: list[str] | None = None,
     ) -> dict:
         """Collect frontmatter data programmatically."""
-        doc_id = self._generate_doc_id(project_name)
+        doc_id = generate_doc_id(project_name)
 
         data = {
             "doc_id": doc_id,
@@ -43,11 +44,6 @@ class FrontmatterPhase(Phase):
 
         self.update_state(data)
         return data
-
-    def _generate_doc_id(self, project_name: str) -> str:
-        """Generate a document ID from project name."""
-        base = project_name.upper().replace(" ", "-").replace("_", "-")
-        return f"{base}-v1.0"
 
     def _get_parent_doc(self) -> str | None:
         """Get parent document ID from context."""

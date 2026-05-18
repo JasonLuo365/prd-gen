@@ -30,6 +30,40 @@ doc_id: "PARENT-v1.0"
         path.unlink()
 
 
+def test_parse_parent_prd_without_frontmatter():
+    """没有 frontmatter 时也能正常解析。"""
+    prd_content = "# Requirements\n\n## Must Have\n- [REQ-001] 基本功能\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+        f.write(prd_content)
+        f.flush()
+        path = Path(f.name)
+
+    try:
+        result = parse_parent_prd(path)
+        assert result["doc_id"] == "UNKNOWN"
+        assert len(result["requirements"]) == 1
+        assert result["requirements"][0]["id"] == "REQ-001"
+    finally:
+        path.unlink()
+
+
+def test_parse_parent_prd_with_malformed_frontmatter():
+    """frontmatter 只有一对分隔符时不崩溃。"""
+    prd_content = "---\n仅有一个分隔符\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+        f.write(prd_content)
+        f.flush()
+        path = Path(f.name)
+
+    try:
+        result = parse_parent_prd(path)
+        assert result["doc_id"] == "UNKNOWN"
+    finally:
+        path.unlink()
+
+
 def test_extract_module_context():
     arch_content = """
 modules:
@@ -67,5 +101,35 @@ def test_extract_missing_module():
         result = extract_module_context(path, "payment_gateway")
         assert result["found"] is False
         assert result["available_modules"] == ["user_service"]
+    finally:
+        path.unlink()
+
+
+def test_extract_module_from_empty_file():
+    """空文件时返回空列表。"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("")
+        f.flush()
+        path = Path(f.name)
+
+    try:
+        result = extract_module_context(path, "any_module")
+        assert result["found"] is False
+        assert result["available_modules"] == []
+    finally:
+        path.unlink()
+
+
+def test_extract_module_from_invalid_yaml():
+    """YAML 解析结果不是字典时不崩溃。"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("just_a_string")
+        f.flush()
+        path = Path(f.name)
+
+    try:
+        result = extract_module_context(path, "any_module")
+        assert result["found"] is False
+        assert result["available_modules"] == []
     finally:
         path.unlink()

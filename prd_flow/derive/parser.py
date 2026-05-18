@@ -12,9 +12,14 @@ def parse_parent_prd(path: Path) -> dict:
     # Extract YAML frontmatter
     frontmatter = {}
     if content.startswith("---"):
-        _, fm, body = content.split("---", 2)
-        frontmatter = yaml.safe_load(fm)
-        content = body
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            fm = parts[1]
+            body = parts[2]
+            loaded = yaml.safe_load(fm)
+            if loaded is not None:
+                frontmatter = loaded
+            content = body
 
     # Extract requirements
     requirements = []
@@ -25,7 +30,7 @@ def parse_parent_prd(path: Path) -> dict:
         requirements.append({"id": req_id, "text": req_text})
 
     return {
-        "doc_id": frontmatter.get("doc_id", "UNKNOWN"),
+        "doc_id": frontmatter.get("doc_id", "UNKNOWN") if isinstance(frontmatter, dict) else "UNKNOWN",
         "frontmatter": frontmatter,
         "requirements": requirements,
         "raw_content": content,
@@ -37,11 +42,18 @@ def extract_module_context(arch_path: Path, target_module: str) -> dict:
     content = arch_path.read_text(encoding="utf-8")
     data = yaml.safe_load(content)
 
+    if not isinstance(data, dict):
+        return {
+            "found": False,
+            "module": None,
+            "available_modules": [],
+        }
+
     modules = data.get("modules", [])
-    available = [m["name"] for m in modules]
+    available = [m["name"] for m in modules if isinstance(m, dict) and "name" in m]
 
     for module in modules:
-        if module["name"] == target_module:
+        if isinstance(module, dict) and module.get("name") == target_module:
             return {
                 "found": True,
                 "module": module,
