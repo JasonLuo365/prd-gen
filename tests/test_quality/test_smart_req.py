@@ -1,0 +1,53 @@
+from prd_flow.quality.smart_req import check_smart_req, SMARTResult
+
+
+def test_specific_passes_with_concrete_nouns():
+    req = {"id": "REQ-001", "text": "认证接口 P99 延迟 ≤ 200ms", "priority": "Must Have"}
+    result = check_smart_req(req)
+    assert result.specific is True
+
+
+def test_specific_fails_with_vague_quantifiers():
+    req = {"id": "REQ-002", "text": "系统应该很快", "priority": "Must Have"}
+    result = check_smart_req(req)
+    assert result.specific is False
+    assert "模糊" in result.issues[0]
+
+
+def test_measurable_passes_with_numeric_metric():
+    req = {"id": "REQ-003", "text": "3 秒内完成首次内容绘制", "priority": "Must Have"}
+    result = check_smart_req(req)
+    assert result.measurable is True
+
+
+def test_testable_passes_with_gherkin():
+    req = {
+        "id": "REQ-004",
+        "text": "用户可通过邮箱注册",
+        "priority": "Must Have",
+        "gherkin_count": 1,
+    }
+    result = check_smart_req(req)
+    assert result.testable is True
+
+
+def test_testable_fails_without_gherkin():
+    req = {
+        "id": "REQ-005",
+        "text": "系统应具有一致性",
+        "priority": "Must Have",
+        "gherkin_count": 0,
+    }
+    result = check_smart_req(req)
+    assert result.testable is False
+
+
+def test_overall_pass_requires_all_dimensions():
+    req = {
+        "id": "REQ-006",
+        "text": "认证接口 P99 延迟 ≤ 200ms",
+        "priority": "Must Have",
+        "gherkin_count": 1,
+    }
+    result = check_smart_req(req)
+    assert result.overall_pass is True
