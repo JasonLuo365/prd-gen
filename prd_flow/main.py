@@ -3,13 +3,38 @@ from __future__ import annotations
 
 import argparse
 import sys
+import uuid
 from pathlib import Path
 
 from prd_flow.mode_detector import Mode, detect_mode
 from prd_flow.output.assembler import assemble_prd
+from prd_flow.phases.frontmatter import FrontmatterPhase
+from prd_flow.phases.problem_statement import ProblemStatementPhase
+from prd_flow.phases.requirements import RequirementsPhase
+from prd_flow.phases.acceptance import AcceptancePhase
+from prd_flow.phases.success_metrics import SuccessMetricsPhase
+from prd_flow.quality.ambiguity import scan_ambiguity
+from prd_flow.quality.reporter import format_quality_report
 from prd_flow.quality.smart_req import check_smart_req
 from prd_flow.session import SessionState, save_session
-from prd_flow.utils import generate_doc_id
+
+
+def _run_smart_check(state: SessionState) -> list:
+    """对P3的功能需求运行SMART-REQ检查。"""
+    functional = state.draft_content.get("P3", {}).get("functional", [])
+    return [check_smart_req(req) for req in functional]
+
+
+def _run_ambiguity_check(state: SessionState, prd_text: str) -> dict:
+    """对PRD文本运行歧义扫描。"""
+    functional = state.draft_content.get("P3", {}).get("functional", [])
+    return scan_ambiguity(prd_text, functional)
+
+
+def _ask_continue(prompt: str) -> bool:
+    """询问用户是否继续。"""
+    answer = input(f"{prompt} (y/n): ").strip().lower()
+    return answer in ("y", "yes", "是")
 
 
 def run_root_mode(args: argparse.Namespace) -> None:
@@ -19,7 +44,7 @@ def run_root_mode(args: argparse.Namespace) -> None:
     print("=" * 50)
 
     state = SessionState(
-        session_id=f"sess_{Path(__file__).stem}",
+        session_id=f"sess_{uuid.uuid4().hex[:8]}",
         mode="root",
         current_phase="P1",
         completed_phases=[],
@@ -27,36 +52,58 @@ def run_root_mode(args: argparse.Namespace) -> None:
     )
 
     # Phase 1: Frontmatter
-    print("\n[Phase 1/5] Frontmatter - Document Metadata")
-    project_name = input("Project name: ").strip()
-    author = input("Author (default: Claude): ").strip() or "Claude"
-    priority = input("Priority (P0/P1/P2, default: P0): ").strip() or "P0"
+    phase1 = FrontmatterPhase(state)
+    phase1.run()
+    print(f"\n生成文档ID: {state.draft_content['P1']['doc_id']}")
 
-    state.draft_content["P1"] = {
-        "doc_id": generate_doc_id(project_name),
-        "version": "1.0.0",
-        "layer": "root",
-        "parent_doc": None,
-        "author": author,
-        "status": "draft",
-        "priority": priority,
-    }
+    # Phase 2: Problem Statement
+    phase2 = ProblemStatementPhase(state)
+    phase2.run()
 
-    print(f"\nGenerated doc_id: {state.draft_content['P1']['doc_id']}")
+    # Phase 3: Requirements (with quality gate)
+    phase3 = RequirementsPhase(state)
+    phase3.run()
 
-    # Save session after each phase
+    # Quality gate after P3
+    smart_results = _run_smart_check(state)
+    report = format_quality_report(smart_results=smart_results)
+    print(report)
+
+    if not all(r.overall_pass for r in smart_results):
+        print("\n⚠️  发现质量问题，建议修复后重新收集需求。")
+        if not _ask_continue("是否继续生成PRD"):
+            print("已取消。可重新运行工具修正需求。")
+            return
+
+    # Phase 4: Acceptance
+    phase4 = AcceptancePhase(state)
+    phase4.run()
+
+    # Phase 5: Success Metrics
+    phase5 = SuccessMetricsPhase(state)
+    phase5.run()
+
+    # Final assembly
+    prd_text = assemble_prd(state.draft_content)
+
+    # Final quality gate (ambiguity scan)
+    ambiguity = _run_ambiguity_check(state, prd_text)
+    if ambiguity["lexical"] or ambiguity["logic"] or ambiguity["completeness"]:
+        report = format_quality_report(smart_results=[], ambiguity_result=ambiguity)
+        print(report)
+        if not _ask_continue("是否继续生成最终PRD"):
+            print("已取消。可重新运行工具修正内容。")
+            return
+
+    # Save PRD to file
+    output_path = Path(args.output) if args.output else Path(f"{state.draft_content['P1']['doc_id']}.md")
+    output_path.write_text(prd_text, encoding="utf-8")
+    print(f"\nPRD已保存至: {output_path}")
+
+    # Save session
     session_path = Path(f".prd_session_{state.session_id}.json")
     save_session(state, session_path)
-    print(f"Session saved to: {session_path}")
-
-    # Note: Phases 2-5 would follow similar interactive patterns
-    # For brevity, we demonstrate the structure; full implementation
-    # would include all five phases with quality checks
-
-    print("\n" + "=" * 50)
-    print("Root mode skeleton complete.")
-    print("Full interactive flow implemented in phases/ modules.")
-    print("=" * 50)
+    print(f"会话已保存至: {session_path}")
 
 
 def run_derive_mode(args: argparse.Namespace) -> None:
@@ -84,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parent-architecture", help="Path to parent architecture document")
     parser.add_argument("--target-module", help="Target module name for Derive mode")
     parser.add_argument("--resume", help="Path to session file to resume")
+    parser.add_argument("--output", "-o", help="输出PRD文件路径")
 
     args = parser.parse_args(argv)
 

@@ -1,5 +1,6 @@
 """Frontmatter metadata collection phase."""
 from datetime import datetime
+from typing import Any
 
 from prd_flow.phases.base import Phase
 from prd_flow.session import SessionState
@@ -15,10 +16,13 @@ class FrontmatterPhase(Phase):
     def phase_name(self) -> str:
         return "Frontmatter"
 
-    def run(self):
+    def run(self) -> dict[str, Any]:
         """Interactive entry point."""
-        # In real usage, this would prompt the user interactively
-        raise NotImplementedError("Use collect() for programmatic input")
+        print("\n[Phase 1/5] Frontmatter - 文档元数据\n")
+        project_name = input("项目名称：").strip()
+        author = input("作者（默认: Claude）：").strip() or "Claude"
+        priority = input("优先级（P0/P1/P2, 默认: P0）：").strip() or "P0"
+        return self.collect(project_name=project_name, author=author, priority=priority)
 
     def collect(
         self,
