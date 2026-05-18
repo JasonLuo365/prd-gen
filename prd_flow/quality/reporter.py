@@ -24,8 +24,7 @@ def format_quality_report(
 
     for result in smart_results:
         status = "通过" if result.overall_pass else "未通过"
-        symbol = "通过" if result.overall_pass else "未通过"
-        lines.append(f"[{symbol}] {result.req_id}: {status}")
+        lines.append(f"[{status}] {result.req_id}: {status}")
 
         if not result.specific:
             lines.append(f"      精确性: 未通过")
