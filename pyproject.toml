@@ -1,0 +1,14 @@
+[project]
+name = "prd-flow"
+version = "0.1.0"
+description = "Interactive PRD generation workflow CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+]
