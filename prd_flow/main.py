@@ -366,15 +366,19 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     )
     print(f"\n生成文档ID: {state.draft_content['P1']['doc_id']}")
 
-    # D2: Problem Statement — auto-prefill from module context and first related requirement
+    # Helper: clean requirement text (take first line only, strip markdown)
+    def _clean_req_text(text: str) -> str:
+        return text.split("\n")[0].strip().rstrip("-").strip()
+
+    # D2: Problem Statement — auto-prefill from module context
     phase2 = ProblemStatementPhase(state)
     target_users = "系统用户"
     if related_requirements:
-        first_req_text = related_requirements[0].get("text", "")
-        pain_points = f"上层需求: {first_req_text}"
+        first_req_text = _clean_req_text(related_requirements[0].get("text", ""))
+        pain_points = f"当前系统在 {first_req_text} 方面存在能力不足"
     else:
         pain_points = "未明确"
-    opportunity = f"由 {module_name} 模块承接实现"
+    opportunity = f"由 {module_name} 模块统一封装能力，降低上层系统复杂度"
     phase2.collect(target_users=target_users, pain_points=pain_points, opportunity=opportunity)
 
     # D3: Requirements — for each related requirement, create 2 sub-reqs
@@ -383,19 +387,20 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     parent_reqs_for_fix = related_requirements  # used by fix_parent_req
     for req in related_requirements:
         req_id = req.get("id", "REQ-UNKNOWN")
-        req_text = req.get("text", "")
+        req_text = _clean_req_text(req.get("text", ""))
         is_tentative = req.get("tentative", False)
+        parent_priority = req.get("priority", "Must Have")
         sub_req_1 = {
             "id": f"{req_id}-1",
             "text": f"{module_name} 应提供 {req_text} 的接口封装",
-            "priority": "Must Have",
+            "priority": parent_priority,
             "gherkin_count": 1,
             "parent_req": req_id,
         }
         sub_req_2 = {
             "id": f"{req_id}-2",
             "text": f"{module_name} 应实现 {req_text} 的核心逻辑",
-            "priority": "Must Have",
+            "priority": parent_priority,
             "gherkin_count": 1,
             "parent_req": req_id,
         }

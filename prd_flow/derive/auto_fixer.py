@@ -139,11 +139,15 @@ def generate_interface_scenarios(module_name: str, interfaces: list[dict]) -> li
         happy = {
             "feature": module_name,
             "scenario": f"{name} 正常调用",
+            "given": f"模块 {module_name} 正常运行，依赖服务可用",
+            "when": f"调用 {name} 接口且参数合法",
             "then": "返回状态 200 且响应体符合接口契约",
         }
         error = {
             "feature": module_name,
             "scenario": f"{name} 参数非法",
+            "given": f"模块 {module_name} 正常运行",
+            "when": f"调用 {name} 接口且参数缺失或格式错误",
             "then": "返回状态 400 且 error_code 说明错误原因",
         }
 
