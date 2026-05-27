@@ -36,3 +36,11 @@ class ProblemStatementPhase(Phase):
         }
         self.update_state(data)
         return data
+
+    def check_minimum_standard(self, data: dict[str, Any]) -> tuple[bool, str]:
+        """Check problem statement has all required fields non-empty."""
+        required = ["target_users", "pain_points", "opportunity"]
+        missing = [f for f in required if not data.get(f)]
+        if missing:
+            return False, f"缺少必填内容: {', '.join(missing)}"
+        return True, "Problem Statement 最低标准已满足"

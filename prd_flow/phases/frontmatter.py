@@ -111,6 +111,14 @@ class FrontmatterPhase(Phase):
         self.update_state(data)
         return data
 
+    def check_minimum_standard(self, data: dict[str, Any]) -> tuple[bool, str]:
+        """Check frontmatter has all required fields non-empty."""
+        required = ["doc_id", "version", "author", "status", "priority"]
+        missing = [f for f in required if not data.get(f)]
+        if missing:
+            return False, f"缺少必填字段: {', '.join(missing)}"
+        return True, "Frontmatter 最低标准已满足"
+
     def _get_parent_doc(self) -> str | None:
         """Get parent document ID from context."""
         if self.state.mode == "derive" and self.state.parent_context:

@@ -1,4 +1,5 @@
 """Success metrics phase for PRD generation."""
+import re
 from typing import Any
 
 from prd_flow.phases.base import Phase
@@ -43,3 +44,18 @@ class SuccessMetricsPhase(Phase):
         data = {"metrics": metrics}
         self.update_state(data)
         return data
+
+    _MEASURABLE_RE = re.compile(r"\d+|≥|≤|<|>|%")
+
+    def check_minimum_standard(self, data: dict[str, Any]) -> tuple[bool, str]:
+        """Check at least 1 metric and each target contains a measurable value."""
+        metrics = data.get("metrics", [])
+        if not metrics:
+            return False, "至少需要 1 个成功指标"
+
+        for m in metrics:
+            target = m.get("target", "")
+            if not self._MEASURABLE_RE.search(target):
+                return False, f"指标 '{m['name']}' 的目标值不包含可量化数值"
+
+        return True, "Success Metrics 最低标准已满足"

@@ -32,6 +32,15 @@ class Phase(ABC):
         """
         ...
 
+    @abstractmethod
+    def check_minimum_standard(self, data: dict[str, Any]) -> tuple[bool, str]:
+        """Check if collected data meets minimum standard for this phase.
+
+        Returns:
+            (is_met: bool, message: str) — message explains what's missing or confirms completion
+        """
+        ...
+
     def update_state(self, data: dict[str, Any]) -> None:
         """Update session state with collected data."""
         self.state.draft_content[self.phase_id] = data
