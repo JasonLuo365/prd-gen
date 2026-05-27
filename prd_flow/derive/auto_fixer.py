@@ -31,6 +31,9 @@ _MEASURABLE_KEYWORDS = {
     "容量": "（存储容量 ≥ 1TB）",
 }
 
+# Default measurable suffix to inject when no keyword matches.
+_DEFAULT_MEASURABLE_SUFFIX = "（响应时间 ≤ 200ms）"
+
 # Pattern to detect existing measurable criteria (numbers, percentages, comparisons).
 _MEASURABLE_PATTERN = re.compile(r"[0-9]|%|≥|≤|>|<|>=|<=")
 
@@ -72,7 +75,7 @@ def fix_measurable(req: dict) -> dict:
             break
 
     if suffix is None:
-        suffix = "（需补充具体量化指标）"
+        suffix = _DEFAULT_MEASURABLE_SUFFIX
 
     return {**req, "text": text + suffix}
 

@@ -19,6 +19,21 @@ class FrontmatterPhase(Phase):
     def run(self) -> dict[str, Any]:
         """Interactive entry point."""
         print("\n[Phase 1/5] Frontmatter - 文档元数据\n")
+        if self.state.mode == "derive":
+            if not self.state.parent_context:
+                raise ValueError("Derive mode requires parent_context to be set.")
+            required_keys = {"parent_doc_id", "parent_arch_id", "module_name", "interfaces", "dependencies"}
+            missing = required_keys - self.state.parent_context.keys()
+            if missing:
+                raise ValueError(f"Derive mode parent_context missing keys: {missing}")
+            return self.collect_derive(
+                parent_doc_id=self.state.parent_context["parent_doc_id"],
+                parent_arch_id=self.state.parent_context.get("parent_arch_id"),
+                module_name=self.state.parent_context["module_name"],
+                interfaces=self.state.parent_context["interfaces"],
+                dependencies=self.state.parent_context["dependencies"],
+                priority="P0",
+            )
         project_name = input("项目名称：").strip()
         author = input("作者（默认: Claude）：").strip() or "Claude"
         priority = input("优先级（P0/P1/P2, 默认: P0）：").strip() or "P0"
@@ -32,10 +47,24 @@ class FrontmatterPhase(Phase):
         tags: list[str] | None = None,
     ) -> dict:
         """Collect frontmatter data programmatically."""
+        if self.state.mode == "derive":
+            if not self.state.parent_context:
+                raise ValueError("Derive mode requires parent_context to be set.")
+            return self.collect_derive(
+                parent_doc_id=self.state.parent_context["parent_doc_id"],
+                parent_arch_id=self.state.parent_context.get("parent_arch_id"),
+                module_name=self.state.parent_context["module_name"],
+                interfaces=self.state.parent_context["interfaces"],
+                dependencies=self.state.parent_context["dependencies"],
+                priority=priority,
+                author=author,
+            )
+
         doc_id = generate_doc_id(project_name)
 
         data = {
             "doc_id": doc_id,
+            "project_name": project_name,
             "version": "1.0.0",
             "layer": self.state.mode,
             "parent_doc": self._get_parent_doc(),
@@ -44,6 +73,39 @@ class FrontmatterPhase(Phase):
             "priority": priority,
             "created_at": datetime.now().isoformat(),
             "tags": tags or [],
+        }
+
+        self.update_state(data)
+        return data
+
+    def collect_derive(
+        self,
+        parent_doc_id: str,
+        parent_arch_id: str | None,
+        module_name: str,
+        interfaces: list[dict],
+        dependencies: list[dict],
+        priority: str = "P0",
+        author: str = "Claude",
+    ) -> dict:
+        """Collect frontmatter data for derive mode programmatically."""
+        module_suffix = module_name.upper().replace(" ", "-").replace("_", "-")
+        doc_id = f"{parent_doc_id}-{module_suffix}-v1.0"
+        resolved_parent_arch = parent_arch_id or f"{parent_doc_id}-ARCH"
+
+        data = {
+            "doc_id": doc_id,
+            "version": "1.0.0",
+            "layer": "derive",
+            "parent_doc": parent_doc_id,
+            "parent_arch": resolved_parent_arch,
+            "module_name": module_name,
+            "author": author,
+            "status": "draft",
+            "priority": priority,
+            "created_at": datetime.now().isoformat(),
+            "interfaces": interfaces,
+            "dependencies": dependencies,
         }
 
         self.update_state(data)

@@ -152,7 +152,7 @@ class TestFixMeasurable:
     def test_no_keyword_appends_default(self):
         req = {"id": "REQ-021", "text": "系统应支持日志记录"}
         result = fix_measurable(req)
-        assert "需补充具体量化指标" in result["text"]
+        assert "≤ 200ms" in result["text"]
 
     def test_returns_new_dict_when_modified(self):
         req = {"id": "REQ-022", "text": "系统应具备高可用性"}
@@ -163,12 +163,12 @@ class TestFixMeasurable:
     def test_empty_text_gets_default(self):
         req = {"id": "REQ-022b", "text": ""}
         result = fix_measurable(req)
-        assert "需补充具体量化指标" in result["text"]
+        assert "≤ 200ms" in result["text"]
 
     def test_missing_text_key_gets_default(self):
         req = {"id": "REQ-022c"}
         result = fix_measurable(req)
-        assert "需补充具体量化指标" in result["text"]
+        assert "≤ 200ms" in result["text"]
 
     def test_preserves_other_keys(self):
         req = {"id": "REQ-022d", "text": "系统应具备高可用性", "extra": "value"}
