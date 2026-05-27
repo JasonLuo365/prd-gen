@@ -152,14 +152,14 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
     print(report)
 
     if not all(r.overall_pass for r in smart_results):
-        print("\n⚠️  发现质量问题，建议修复后重新收集需求。")
+        print("\n[WARNING]  发现质量问题，建议修复后重新收集需求。")
         # Print fix suggestions for failed items
         functional = state.draft_content.get("P3", {}).get("functional", [])
         for result in smart_results:
             if not result.overall_pass:
                 req = next((r for r in functional if r.get("id") == result.req_id), {})
                 fix = suggest_fix(req, result)
-                print(f"  💡 [{result.req_id}] {fix}")
+                print(f"  [HINT] [{result.req_id}] {fix}")
         if not _ask_continue("是否继续生成PRD"):
             print("已取消。可重新运行工具修正需求。")
             return
@@ -167,7 +167,7 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
     # Check Gherkin coverage
     coverage_gaps = _check_gherkin_coverage(state)
     if coverage_gaps:
-        print(f"\n⚠️  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
+        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
         for req in coverage_gaps:
             print(f"    - {req.get('id', '')}: {req.get('text', '')[:50]}")
 
@@ -232,14 +232,14 @@ def run_root_mode(args: argparse.Namespace) -> None:
     print(report)
 
     if not all(r.overall_pass for r in smart_results):
-        print("\n⚠️  发现质量问题，建议修复后重新收集需求。")
+        print("\n[WARNING]  发现质量问题，建议修复后重新收集需求。")
         # Print fix suggestions for failed items
         functional = state.draft_content.get("P3", {}).get("functional", [])
         for result in smart_results:
             if not result.overall_pass:
                 req = next((r for r in functional if r.get("id") == result.req_id), {})
                 fix = suggest_fix(req, result)
-                print(f"  💡 [{result.req_id}] {fix}")
+                print(f"  [HINT] [{result.req_id}] {fix}")
         if not _ask_continue("是否继续生成PRD"):
             print("已取消。可重新运行工具修正需求。")
             return
@@ -247,7 +247,7 @@ def run_root_mode(args: argparse.Namespace) -> None:
     # Check Gherkin coverage
     coverage_gaps = _check_gherkin_coverage(state)
     if coverage_gaps:
-        print(f"\n⚠️  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
+        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
         for req in coverage_gaps:
             print(f"    - {req.get('id', '')}: {req.get('text', '')[:50]}")
 
@@ -428,7 +428,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     print(report)
 
     if not all(r.overall_pass for r in smart_results):
-        print("\n⚠️  发现质量问题，尝试自动修复...")
+        print("\n[WARNING]  发现质量问题，尝试自动修复...")
         functional = state.draft_content.get("P3", {}).get("functional", [])
         fixed_functional = []
         for req in functional:
@@ -441,7 +441,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         # Re-check after auto-fix
         smart_results = _run_smart_check(state)
         if not all(r.overall_pass for r in smart_results):
-            print("\n❌ 自动修复后仍有质量问题:")
+            print("\n[ERROR] 自动修复后仍有质量问题:")
             errors = []
             for result in smart_results:
                 if not result.overall_pass:
@@ -451,12 +451,12 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             _write_error_report(state, errors, args)
             return EXIT_QUALITY_BLOCKED
         else:
-            print("✅ 自动修复后所有检查通过。")
+            print("[OK] 自动修复后所有检查通过。")
 
     # Check Gherkin coverage — auto-fill for uncovered Must-Have
     coverage_gaps = _check_gherkin_coverage(state)
     if coverage_gaps:
-        print(f"\n⚠️  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景，自动生成基础场景...")
+        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景，自动生成基础场景...")
         existing_scenarios = state.draft_content.get("P4", {}).get("scenarios", [])
         for req in coverage_gaps:
             req_id = req.get("id", "")
@@ -499,7 +499,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     # Final ambiguity scan
     ambiguity = _run_ambiguity_check(state, prd_text)
     if ambiguity["logic"]:
-        print("\n❌ 发现逻辑冲突:")
+        print("\n[ERROR] 发现逻辑冲突:")
         errors = []
         for item in ambiguity["logic"]:
             error_msg = f"[逻辑冲突] {item['description']}"

@@ -34,7 +34,7 @@ def format_quality_report(
             lines.append(f"      可测试: 未通过")
 
         for issue in result.issues:
-            lines.append(f"      ⚠️  {issue}")
+            lines.append(f"      [WARNING] {issue}")
 
     # Ambiguity section
     if ambiguity_result:
