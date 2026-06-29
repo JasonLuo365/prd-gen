@@ -67,7 +67,8 @@ Use Root mode for the top-level PRD. Do not call external code for Root mode; th
 - Do not ask field-by-field form questions. Ask open questions, extract structure, then confirm the extracted draft.
 - Sharpen vague language inline. If the user says "fast", "friendly", "large scale", "secure", "stable", or a test-blocking qualifier such as "simple" or "complex", immediately propose a quantification, operational definition, or baseline test set.
 - Detect necessary but unstated topics as the PRD forms. If the project type implies a requirement area that the user did not mention, ask the user to choose `include` or `not_applicable`; do not silently add it, omit it, or defer it.
-- Capture meaningful decisions immediately in an internal decision log, especially trade-offs, thresholds, exclusions, and accepted warnings.
+- Capture meaningful decisions immediately in an internal decision log, especially trade-offs, thresholds, exclusions, accepted warnings, and any assumption or conflict that can change testcase triggers, boundaries, oracle, or coverage scope.
+- Keep testcase evidence locked. Do not invent thresholds, counts, time windows, retry limits, legal/compliance oracle, or scenario Then clauses from common sense. If a value is not present in the PRD, parent input, acceptance text, or an explicit owner decision, record it as a Blocking Question or Change Management item.
 - Allow natural-language corrections at any point. Treat them like commands when intent is clear.
 
 Decision-question template:
@@ -159,6 +160,8 @@ Phase exit checklists:
   - Every necessary but unstated requirement area discovered during requirements has an explicit disposition: `include` with written requirements, or `not_applicable` with a written exclusion/non-goal.
   - Every Must-Have passes Specific, Measurable, and Testable SMART-REQ checks.
   - Every test-blocking qualifier in requirements or NFRs has an operational definition, classification rule, accepted enumeration, or baseline test set.
+  - Every test-impacting hypothesis, decision, conflict, or fact has an evidence record with its impact type: `trigger`, `boundary`, `oracle`, `scope`, `exclusion`, or `data set`.
+  - No unstated threshold, count, time-window definition, recovery value, or compliance oracle is carried forward without explicit evidence or an owner.
   - Remaining ambiguity is resolved or recorded as an explicit non-blocking assumption/risk.
   - No Blocking Questions remain before moving to Acceptance.
 - Acceptance phase exit checklist:
@@ -166,11 +169,15 @@ Phase exit checklists:
   - Each scenario has Given, When, and Then.
   - Happy Path is covered; Error Path or boundary behavior is covered when the behavior can fail.
   - Scenario tags include the related `@REQ-XXX` id.
+  - Every Given, When, and Then is traceable to PRD/Acceptance text or an explicit evidence record; Then clauses must not contain invented numbers, policies, or oracle.
+  - Non-blocking test-impacting items may shape existing scenarios, but must not silently create new scenarios or expand coverage beyond their authorized evidence.
 - Success Metrics phase exit checklist:
   - At least one metric exists.
   - Every metric has a target value and measurement method.
   - Every metric that scopes a population with a qualifier has a defined population, measurement start, measurement end, and exclusion rules.
   - Metrics are observable from product behavior, logs, lightweight user feedback, or clearly stated evaluation methods.
+  - Final Testcase Readiness Review has been run after Requirements, Acceptance, and Success Metrics are assembled.
+  - No Blocking Questions remain after the final review.
 
 ### Opening
 
@@ -261,11 +268,19 @@ For each Must-Have, gather at least:
 - one Error Path or boundary scenario when the behavior can fail,
 - a `@REQ-XXX` tag tying the scenario to its requirement.
 
+Acceptance scenarios are evidence-locked:
+
+- Use only authorized PRD/Acceptance text or explicit owner decisions for Given/When/Then.
+- If a hypothesis, decision, conflict, or fact changes an existing scenario's trigger, boundary, oracle, scope, exclusion, or data set, reference that evidence record in the scenario tags or nearby rationale.
+- A non-blocking item does not automatically produce a new scenario. It may only refine an already-authorized scenario's wording or data if the evidence explicitly supports that refinement.
+- If an item requires owner confirmation, do not generate the affected testcase. Put it in the Change Management Backlog until the owner resolves it.
+- Do not use `@auto-resolved-assumption`, "reasonable default", or invented pass/fail oracle in `.feature` output.
+
 Scenario template:
 
 ```gherkin
 Feature: <feature name>
-  @REQ-001 @critical
+  @REQ-001 @DEC-001 @critical
   Scenario: <observable scenario name>
     Given <precondition>
     When <trigger/action>
@@ -329,7 +344,7 @@ If `prd_flow` is unavailable, use the self-contained LLM fallback so the skill r
 5. Split related parent requirements into lower-level functional requirements. Preserve traceability with `parent_req`, `source`, and requirement-level MoSCoW priority.
 6. Carry relevant orphan parent requirements as `tentative: true` when they plausibly belong to the target module; otherwise report them as blocking or out of scope.
 7. Generate interface Happy Path and Error Path Gherkin scenarios tied to `@REQ-XXX`.
-8. Apply the same SMART-REQ, necessary-but-unstated, ambiguity, and Gherkin coverage quality gates before finalizing.
+8. Apply the same SMART-REQ, evidence-locked testcase, necessary-but-unstated, ambiguity, and Gherkin coverage quality gates before finalizing.
 
 Derive mode does not ask interactive follow-up questions. If the parent PRD or architecture omits a necessary topic for the target module and it cannot be inferred as explicitly in scope or explicitly not applicable, treat the output as quality blocked and report the upstream question. Do not guess a disposition.
 
@@ -341,7 +356,7 @@ Expected backend behavior:
 - Include orphan requirements as `tentative: true` when policy allows.
 - Split parent requirements into lower-level functional requirements with `parent_req`.
 - Generate interface Happy Path and 400 Error Path Gherkin scenarios.
-- Run automatic SMART-REQ, necessary-but-unstated, ambiguity, and Gherkin coverage checks.
+- Run automatic SMART-REQ, evidence-locked testcase, necessary-but-unstated, ambiguity, and Gherkin coverage checks.
 
 Exit code handling:
 
@@ -353,7 +368,7 @@ Exit code handling:
 
 ## Quality Gates
 
-Run quality gates before finalizing every PRD.
+Run quality gates before finalizing every PRD. Quality gates are not a scoring system. They must either repair the PRD into a testcase-ready state, block final output, or record explicitly out-of-version items in Change Management.
 
 ### SMART-REQ
 
@@ -379,6 +394,14 @@ Common test-blocking qualifiers include:
 - quality attribute: timely, fast, stable, reliable, accurate, complete, partial, secure;
 - risk class: high-risk, low-risk, sensitive, safe.
 
+Test-blocking decisions also include missing or ambiguous values that decide an existing testcase's:
+
+- trigger: which event starts the scenario, such as the second vs third occurrence of an error;
+- boundary: limit values such as the fourth image, second file, fifty-first upload, retry count, timeout, or truncation length;
+- oracle: the exact expected result, including legal/compliance pass criteria or whether a rejection/termination is complete;
+- scope: whether inputs cover two categories or three categories, natural hour or rolling hour, complete knowledge list or sampled knowledge points;
+- recovery: when uploads, retries, auto-switching, or degraded behavior resume normal operation.
+
 Before finalizing a PRD, every test-blocking qualifier in Requirements, Acceptance, or Success Metrics must be replaced with or backed by an operational definition. A valid operational definition includes at least one of:
 
 - a classification rule with concrete thresholds, such as input length, step count, app count, data size, concurrency, or allowed operation types;
@@ -397,6 +420,68 @@ Example:
 
 - Blocked: "Simple tasks must generate a plan within 10 seconds."
 - Ready: "Simple task means a Telegram text task under 200 characters, involving one bound PC, one authorized local application, no high-risk operation, no file batch processing, no manual takeover, and an expected plan of at most 3 steps. Baseline test set: open calculator, open notepad, create an empty txt file, capture current screen. Plan generation P95 <= 10 seconds from message receipt to plan response."
+
+### Evidence-Locked Testcase Gate
+
+Before finalizing Requirements, Acceptance, or Success Metrics, build a Test Evidence and Decision Register for anything that affects testcase generation.
+
+Use these record types:
+
+| Type | Meaning | Testcase treatment |
+| --- | --- | --- |
+| `HYP` | Hypothesis or inferred assumption that needs evidence | May shape existing scenarios only after owner authorization; otherwise block or enter Change Management |
+| `DEC` | Explicit product, technical, or policy decision | May be used in Given/When/Then and oracle when evidence is cited |
+| `CONFLICT` | Contradiction between PRD, parent input, user statement, or acceptance text | Blocks affected scenarios until resolved |
+| `FACT` | Source fact, domain constraint, external rule, or owner-provided baseline | May be used only within its stated scope |
+
+For each record, capture:
+
+- `id`: stable ID such as `HYP-001`, `DEC-001`, `CONFLICT-001`, or `FACT-001`.
+- `source`: PRD section, parent input, user answer, owner, or external authority.
+- `owner`: PO, backend, SRE, legal/compliance, QA, or another accountable role.
+- `impact`: one or more of `trigger`, `boundary`, `oracle`, `scope`, `exclusion`, `data set`, `recovery`, or `metric population`.
+- `affected_items`: related `REQ-*`, `NFR-*`, Acceptance scenario, or downstream testcase IDs when known.
+- `status`: `authorized`, `non_blocking_test_impacting`, `blocking`, or `change_management`.
+- `treatment`: how the PRD text, Acceptance, Non-goals, Blocking Questions, or Change Management Backlog handles it.
+
+Rules:
+
+1. `authorized` records may be used directly for testcase execution.
+2. `non_blocking_test_impacting` records do not create new scenarios, but they can decide how existing scenarios are written. They still need evidence and must be traceable.
+3. `blocking` records stop the affected PRD section or final generation.
+4. `change_management` records are not converted into testcase scenarios in the current PRD. Record the owner and the exact decision needed.
+5. Never downgrade a missing oracle, undefined boundary, ambiguous time window, unknown compliance criterion, or unresolved input-category conflict to a generic Open Question.
+6. Never inject invented values into `.feature` files with tags such as `@auto-resolved-assumption`.
+
+### Final Testcase Readiness Review
+
+Run this review after P5, before emitting the final PRD. Its purpose is to catch testcase-blocking gaps that earlier general quality checks may miss. Do not assign a score.
+
+Review every Requirement, NFR, Acceptance scenario, Success Metric, Non-goal, and evidence record. For each item, actively probe these patterns:
+
+| Pattern | Probe question |
+| --- | --- |
+| Quantity or upload limit | What happens at `N`, `N+1`, and API bypass? Is the extra item blocked, rejected, ignored, truncated, or partially accepted? |
+| Time or frequency limit | Is the window natural, rolling, session-based, or reset by a specific event? When does recovery happen? |
+| File or input constraint | Which types, sizes, counts, combinations, corrupt inputs, duplicate inputs, and mixed valid/invalid inputs are allowed? |
+| Enumeration or category | Is the list complete, owner-maintained, sampled, or versioned? What happens to unknown categories? |
+| State transition | What are valid states, invalid states, repeated actions, cancellation, termination, and restart behavior? |
+| Retry or consecutive failure | Which attempt triggers behavior? Does success reset the counter? What is the maximum retry count and final oracle? |
+| Partial failure | Does one failed item reject the whole request, skip only the failed item, or produce partial success? |
+| Ordering or priority | If only some inputs are processed, what decides "first": selection order, upload order, receive order, timestamp, or priority? |
+| Error oracle | What exact state, message, error code, log, audit event, or user-visible result proves the behavior? |
+| Metric population | What are measurement start, end, sample population, baseline set, exclusion rules, and aggregation method? |
+| Compliance or policy | Which rule source, checklist, reviewer, or owner defines pass/fail? |
+
+For each gap found, follow this repair loop:
+
+1. If the answer can be obtained from the user or owner in the current session, ask the smallest single clarification question with concrete options.
+2. After the answer is provided, rewrite the affected PRD sections: Requirements, Acceptance, Success Metrics, Non-goals, Test Evidence and Decision Register, and Change Management Backlog as needed.
+3. Re-run the relevant quality gates and this final review on the revised PRD.
+4. If the answer cannot be obtained and the affected behavior is in the current PRD scope, add a Blocking Question and do not emit the final PRD.
+5. If the owner explicitly says the behavior is out of the current version, add or update a Non-goal and Change Management item, and ensure Acceptance does not generate testcase coverage for it.
+
+Passing condition: the final review passes only when every current-scope testcase-impacting trigger, boundary, oracle, scope, exclusion, data set, recovery rule, and metric population is either authorized in the PRD or blocked from final output.
 
 ### Necessary But Unstated Gate
 
@@ -441,10 +526,11 @@ Check three layers:
 - completeness gaps: missing security, authentication, authorization, error handling, logging, backup, or observability where relevant.
 - testcase readiness gaps: undefined test-blocking qualifiers, missing baseline test set, missing metric population, missing measurement start or measurement end.
 - necessary-but-unstated gaps: topics that must be dispositioned as `include` or `not_applicable` before final PRD generation.
+- evidence gaps: unowned or unauthorized assumptions, conflicts, facts, thresholds, time windows, recovery values, compliance oracle, or scenario Then clauses that would alter testcase execution.
 
 ### Gherkin Coverage
 
-Every Must-Have must have a linked scenario. Prefer Happy Path plus Error Path. If a scenario count grows beyond five for one requirement, suggest splitting the requirement.
+Every Must-Have must have a linked scenario. Prefer Happy Path plus Error Path. If a scenario count grows beyond five for one requirement, suggest splitting the requirement. Coverage is not enough by itself: each scenario's trigger, boundary, and oracle must be backed by PRD/Acceptance text or an evidence record.
 
 ## Output Contract
 
@@ -501,11 +587,37 @@ Always include this section in final PRDs. List every checklist topic that was c
 | <authorization> | include | <REQ/NFR/Acceptance links> |
 | <high-risk operations> | not_applicable | <explicit non-goal link> |
 
+## Test Evidence and Decision Register
+Always include this section in final PRDs. If no test-impacting evidence records exist, write: `No separate test-impacting assumptions, decisions, conflicts, or facts were identified beyond the Requirements and Acceptance text.`
+
+| ID | Type | Status | Impact | Affected items | Evidence / Owner | PRD treatment |
+| --- | --- | --- | --- | --- | --- | --- |
+| HYP-001 | hypothesis | non_blocking_test_impacting | trigger, oracle | REQ-001 / Acceptance scenario | PO confirmed on <date> | Shapes existing scenario only; does not create a new scenario |
+| CONFLICT-001 | conflict | blocking | scope | REQ-002 | PO required | Listed in Blocking Questions; no testcase generated |
+
+## Change Management Backlog
+Include this section when an owner must resolve a missing boundary, time window, recovery behavior, compliance oracle, or coverage scope after the current PRD version. If none exist, write: `No Change Management items remain.`
+
+| ID | Related item | Missing decision | Owner | Why testcase generation is blocked | Required PRD update |
+| --- | --- | --- | --- | --- | --- |
+| CM-001 | HYP-003 / REQ-007 | Natural hour vs rolling hour upload window | PO / Backend | Boundary scenarios cannot be authorized | Define the window and 51st-upload behavior |
+
+## Final Testcase Readiness Review
+Always include this section in final PRDs. If it passes, write `PASS`. If any current-scope blocking gap remains, do not emit the final PRD; emit the Blocking Questions report instead.
+
+| Check area | Result | Evidence / notes |
+| --- | --- | --- |
+| Quantity, boundary, and overflow behavior | PASS | All current-scope limits define `N`, `N+1`, and bypass behavior |
+| Time window and recovery behavior | PASS | All current-scope windows define reset and recovery |
+| Error oracle and observable results | PASS | Acceptance Then clauses cite PRD text or evidence records |
+| Metric population and measurement | PASS | Success Metrics define start, end, population, and exclusions |
+| Change Management exclusions | PASS | CM items are excluded from current testcase coverage |
+
 # Acceptance
 
 ```gherkin
 Feature: ...
-  @REQ-001
+  @REQ-001 @DEC-001
   Scenario: ...
     Given ...
     When ...
@@ -528,9 +640,10 @@ If Blocking Questions remain, do not create the final PRD. Produce a blocking re
 | --- | --- | --- | --- |
 | BLOCKING-001 | NFR-003 | "simple task" lacks an operational definition and baseline test set | Define simple task by thresholds, examples, or exclusions. |
 | BLOCKING-002 | Requirements | Authorization appears necessary but has no disposition | Choose `include` to define authorization requirements, or `not_applicable` to state this PRD does not cover authorization. |
+| BLOCKING-003 | REQ-007 | Upload limit says 50 images but does not define natural hour vs rolling hour, 51st image behavior, or recovery timing | PO must define the window, rejection oracle, and recovery rule before testcase generation. |
 ```
 
-Final PRDs may include only non-blocking assumptions or open questions. Open Questions must not contain unresolved issues that block testcase generation, and must not contain necessary but unstated topics without an `include` or `not_applicable` disposition.
+Final PRDs may include only non-blocking assumptions or open questions that do not change testcase trigger, boundary, oracle, scope, exclusion, data set, recovery, or metric population. Open Questions must not contain unresolved issues that block testcase generation, and must not contain necessary but unstated topics without an `include` or `not_applicable` disposition. Use the Change Management Backlog for owner-owned gaps that are intentionally outside the current PRD version.
 
 For Derive documents, add `parent_arch`, `module_name`, `interfaces`, and `dependencies` to frontmatter when available.
 
@@ -562,7 +675,13 @@ Natural-language feedback is valid. Interpret "go back and change the target use
 - Do not treat document-level `priority` as the primary layer marker; prefer `scope`.
 - Do not continue when a Must-Have fails mandatory SMART-REQ checks unless the user explicitly accepts and records a reason.
 - Do not allow an undefined test-blocking qualifier into the final PRD.
+- Do not allow an unauthorized testcase trigger, boundary, oracle, scope, exclusion, data set, recovery value, or metric population into the final PRD.
 - Do not hide testcase-blocking ambiguity in Open Questions.
+- Do not use `@auto-resolved-assumption` or invented "reasonable defaults" in Acceptance or downstream `.feature` scenarios.
+- Do not treat non-blocking assumptions as irrelevant to testcase generation; if they affect existing scenarios, record their evidence and impact.
+- Do not generate or expand testcase scenarios for Change Management items until the owner updates the PRD.
+- Do not emit the final PRD while Final Testcase Readiness Review still has current-scope Blocking Questions.
+- Do not merely list testcase-blocking gaps when the user can answer them now; ask, rewrite the PRD, and re-run the review.
 - Do not mechanically ask every item in the necessary-but-unstated checklist; use project context to decide relevance.
 - Do not use `defer`, `TBD`, or "future consideration" for necessary but unstated topics; force `include` or `not_applicable`, or block final PRD generation.
 - Do not mark a necessary topic as `not_applicable` without writing the exclusion/non-goal in the PRD.

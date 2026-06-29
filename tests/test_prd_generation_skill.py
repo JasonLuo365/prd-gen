@@ -96,7 +96,7 @@ def test_skill_guards_against_known_antipatterns() -> None:
     assert "scope" in text
     assert "priority" in text
     assert "TODO" not in text
-    assert "TBD" not in text
+    assert 'Do not use `defer`, `TBD`, or "future consideration"' in text
 
 
 def test_skill_blocks_undefined_testcase_terms() -> None:
@@ -123,6 +123,28 @@ def test_skill_blocks_undefined_testcase_terms() -> None:
         assert qualifier in text
 
 
+def test_skill_requires_evidence_locked_testcase_generation() -> None:
+    text = read_skill()
+    assert "Evidence-Locked Testcase Gate" in text
+    assert "Final Testcase Readiness Review" in text
+    assert "Test Evidence and Decision Register" in text
+    assert "Change Management Backlog" in text
+    assert "non_blocking_test_impacting" in text
+    assert "trigger" in text
+    assert "boundary" in text
+    assert "oracle" in text
+    assert "natural hour vs rolling hour" in text
+    assert "51st-upload behavior" in text
+    assert "@auto-resolved-assumption" in text
+    assert "Do not use `@auto-resolved-assumption`" in text
+    assert "Do not treat non-blocking assumptions as irrelevant to testcase generation" in text
+    assert "Do not generate or expand testcase scenarios for Change Management items" in text
+    assert "What happens at `N`, `N+1`, and API bypass?" in text
+    assert "rewrite the affected PRD sections" in text
+    assert "Re-run the relevant quality gates and this final review" in text
+    assert "Do not emit the final PRD while Final Testcase Readiness Review" in text
+
+
 if __name__ == "__main__":
     test_skill_frontmatter()
     test_skill_contains_required_sections()
@@ -131,4 +153,5 @@ if __name__ == "__main__":
     test_skill_defines_explicit_trigger_mechanism()
     test_skill_guards_against_known_antipatterns()
     test_skill_blocks_undefined_testcase_terms()
+    test_skill_requires_evidence_locked_testcase_generation()
     print("PRD generation skill static checks passed.")
