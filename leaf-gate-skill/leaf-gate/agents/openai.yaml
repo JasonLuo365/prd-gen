@@ -1,0 +1,4 @@
+interface:
+  display_name: "Leaf Gate"
+  short_description: "Decide whether a layered PRD node is ready for vibecoding."
+  default_prompt: "Use $leaf-gate to decide whether this PRD node should be decomposed further or implemented."

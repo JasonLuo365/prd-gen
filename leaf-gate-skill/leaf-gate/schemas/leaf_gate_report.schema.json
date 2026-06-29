@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Leaf Gate Report",
+  "type": "object",
+  "required": ["node_id", "decision", "summary", "static_checks", "next_action"],
+  "properties": {
+    "node_id": { "type": "string" },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "LEAF_READY",
+        "NEEDS_DECOMPOSITION",
+        "NEEDS_SPEC_REFINEMENT",
+        "HUMAN_REVIEW",
+        "STATIC_PASS_REQUIRES_LLM"
+      ]
+    },
+    "summary": { "type": "string" },
+    "static_checks": { "type": "object" },
+    "llm_judgement": { "type": ["object", "null"] },
+    "next_action": {
+      "type": "object",
+      "required": ["type", "children", "notes"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["decompose", "refine_spec", "human_review", "vibecode"]
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

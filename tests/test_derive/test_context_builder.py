@@ -80,3 +80,49 @@ def test_build_derive_context_module_not_found():
     finally:
         prd_path.unlink()
         arch_path.unlink()
+
+
+def test_build_derive_context_detects_orphan_requirements():
+    """Requirements mentioning no module should appear in orphan_requirements."""
+    prd_content = """---
+doc_id: "PARENT-v1.0"
+---
+
+# Requirements
+
+## Must Have
+- [REQ-001] payment_gateway 应支持多种支付方式
+- [REQ-010] 支付退款
+- [REQ-011] 用户数据隐私保护
+"""
+
+    arch_content = """
+doc_id: "PARENT-ARCH-v1.0"
+modules:
+  - name: payment_gateway
+    interfaces:
+      - name: create_payment
+        method: POST
+    dependencies: []
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as prd_f, \
+         tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as arch_f:
+        prd_f.write(prd_content)
+        arch_f.write(arch_content)
+        prd_f.flush()
+        arch_f.flush()
+        prd_path = Path(prd_f.name)
+        arch_path = Path(arch_f.name)
+
+    try:
+        result = build_derive_context(prd_path, arch_path, "payment_gateway")
+        assert result["success"] is True
+        assert len(result["orphan_requirements"]) >= 2
+        orphan_ids = {req.get("id", "") for req in result["orphan_requirements"]}
+        assert "REQ-010" in orphan_ids
+        assert "REQ-011" in orphan_ids
+        assert "REQ-001" not in orphan_ids
+    finally:
+        prd_path.unlink()
+        arch_path.unlink()

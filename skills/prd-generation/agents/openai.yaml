@@ -1,0 +1,4 @@
+interface:
+  display_name: "PRD Generation"
+  short_description: "Generate layered PRDs with root and derive modes."
+  default_prompt: "Help me create a layered PRD."

@@ -9,3 +9,18 @@ build/
 .coverage
 htmlcov/
 .prd_session_*.json
+external/prd-skill-sources/
+
+# Local agent/editor state
+.claude/settings.local.json
+
+# Generated reports, previews, and packaged artifacts
+outputs/
+leaf-gate-output/
+prd-gherkin-output/
+*.inspect.ndjson
+*.zip
+
+# Binary reference/export artifacts; keep Markdown/source docs in Git instead
+*.pdf
+*.pptx

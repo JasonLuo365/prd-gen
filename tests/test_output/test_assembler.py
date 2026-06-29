@@ -49,3 +49,30 @@ def test_assemble_root_prd():
     assert "# Requirements" in result
     assert "```gherkin" in result
     assert "# Success Metrics" in result
+
+
+def test_assemble_prd_with_and_steps():
+    draft = {
+        "P1": {"doc_id": "TEST-v1.0", "version": "1.0.0", "layer": "root", "author": "test"},
+        "P2": {"target_users": "用户", "pain_points": "痛点", "opportunity": "机会"},
+        "P3": {"functional": [], "non_functional": []},
+        "P4": {
+            "scenarios": [
+                {
+                    "feature": "注册",
+                    "scenario": "成功注册",
+                    "given": "用户访问注册页",
+                    "when": "用户输入邮箱和密码",
+                    "and_steps": ["用户点击注册按钮"],
+                    "then": "账户创建成功",
+                }
+            ]
+        },
+        "P5": {"metrics": []},
+    }
+
+    result = assemble_prd(draft)
+
+    assert "    When 用户输入邮箱和密码" in result
+    assert "    And 用户点击注册按钮" in result
+    assert "    Then 账户创建成功" in result
