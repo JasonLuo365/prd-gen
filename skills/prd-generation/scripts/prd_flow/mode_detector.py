@@ -16,6 +16,7 @@ def detect_mode(
     parent_prd: str | None,
     parent_architecture: str | None,
     target_module: str | None,
+    architecture_package: str | None = None,
 ) -> Mode:
     """Detect PRD generation mode from user input and context.
 
@@ -28,8 +29,8 @@ def detect_mode(
     if any(kw in user_input for kw in _ROOT_KEYWORDS):
         return Mode.ROOT
 
-    # Rule 2: Derive mode requires all three inputs
-    if parent_prd and parent_architecture and target_module:
+    # Rule 2: Derive mode requires parent PRD, architecture input, and target module
+    if parent_prd and (parent_architecture or architecture_package) and target_module:
         return Mode.DERIVE
 
     # Rule 3: Default to root

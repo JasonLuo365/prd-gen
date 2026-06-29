@@ -50,14 +50,21 @@ def test_skill_encodes_root_and_derive_contracts() -> None:
     assert "Requirements phase exit checklist" in text
     assert "block the transition" in text
     assert "choice-style options" in text
+    assert "choice-first elicitation" in text
+    assert "Other / supplement" in text
+    assert "directions, not facts" in text
     assert "Recommended option" in text
     assert "pros and cons" in text
     assert "free-form answer" in text
     assert "answer template" in text
     assert "Do not invent a concrete project" in text
     assert "parent_prd" in text
+    assert "architecture_package" in text
     assert "parent_architecture" in text
     assert "target_module" in text
+    assert "target_granularity" in text
+    assert "README.md" in text
+    assert "zip" in text
     assert "python -m prd_flow" in text
     assert "If `prd_flow` is unavailable" in text
     assert "LLM fallback" in text
@@ -97,6 +104,15 @@ def test_skill_guards_against_known_antipatterns() -> None:
     assert "priority" in text
     assert "TODO" not in text
     assert 'Do not use `defer`, `TBD`, or "future consideration"' in text
+
+
+def test_root_mode_prefers_choice_first_questions() -> None:
+    text = read_skill()
+    assert "Root mode will primarily use choice questions" in text
+    assert "Ask one choice-first decision at a time" in text
+    assert "select, combine, remove, or supplement" in text
+    assert "Do not present candidate capabilities as facts" in text
+    assert "Only use a fully open question when there is too little context" in text
 
 
 def test_skill_blocks_undefined_testcase_terms() -> None:
@@ -152,6 +168,7 @@ if __name__ == "__main__":
     test_skill_has_installable_metadata()
     test_skill_defines_explicit_trigger_mechanism()
     test_skill_guards_against_known_antipatterns()
+    test_root_mode_prefers_choice_first_questions()
     test_skill_blocks_undefined_testcase_terms()
     test_skill_requires_evidence_locked_testcase_generation()
     print("PRD generation skill static checks passed.")

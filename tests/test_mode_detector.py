@@ -23,6 +23,18 @@ def test_derive_with_all_inputs():
     assert result == Mode.DERIVE
 
 
+def test_derive_with_architecture_package():
+    """Architecture package can replace legacy parent_architecture."""
+    result = detect_mode(
+        user_input="鐢熸垚鏀粯妯″潡鐨凱RD",
+        parent_prd="parent_prd.md",
+        parent_architecture=None,
+        architecture_package="architecture",
+        target_module="payment_gateway",
+    )
+    assert result == Mode.DERIVE
+
+
 def test_missing_target_defaults_to_root():
     """Missing target_module falls back to root."""
     result = detect_mode(

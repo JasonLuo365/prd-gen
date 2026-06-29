@@ -1,6 +1,6 @@
 ---
 name: prd-generation
-description: Use when the user explicitly asks to generate, write, create, or derive a PRD; invokes PRD Generation, Root mode, or Derive mode; or provides parent_prd, parent_architecture, and target_module for lower-level PRD generation.
+description: Use when the user explicitly asks to generate, write, create, or derive a PRD; invokes PRD Generation, Root mode, or Derive mode; or provides parent_prd, architecture_package or parent_architecture, and target_module for lower-level PRD generation.
 ---
 
 # PRD Generation
@@ -30,7 +30,7 @@ Derive trigger phrases include:
 - "进入 Derive 模式"
 - "生成下层 PRD"
 - "根据上层 PRD 和架构生成模块 PRD"
-- Any request that provides `parent_prd`, `parent_architecture`, and `target_module`.
+- Any request that provides `parent_prd`, `architecture_package` or legacy `parent_architecture`, and `target_module`.
 
 Non-trigger phrases include:
 
@@ -47,7 +47,7 @@ Choose the mode only after the Trigger Mechanism passes and before collecting co
 
 | Condition | Mode | Action |
 | --- | --- | --- |
-| User provides `parent_prd`, `parent_architecture`, and `target_module` | Derive | Run the Derive workflow with no interactive questions |
+| User provides `parent_prd`, `architecture_package` or legacy `parent_architecture`, and `target_module` | Derive | Run the Derive workflow with no interactive questions |
 | User says this is a new project, new feature start, or top-level PRD | Root | Start the deep elicitation workflow |
 | User only says "write a PRD" or similar | Clarify | Ask whether this is the top-level PRD or a lower-level derivation |
 
@@ -60,11 +60,12 @@ Use Root mode for the top-level PRD. Do not call external code for Root mode; th
 ### Conversation Rules
 
 - Ask one question at a time.
+- Use choice-first elicitation in Root mode after the minimal PRD target is known. Present 2-4 mutually exclusive direction options, mark one as the Recommended option when a default is useful, explain the pros and cons of each option, and always include `Other / supplement` so the user can add, combine, or override options with a free-form answer.
 - Match the question format to the uncertainty level:
-  - When the PRD target is unknown, ask an open question and provide an answer template only. Do not invent a concrete project, product, user group, or pain point.
-  - When the user must make a decision, present choice-style options. Include 2-4 mutually exclusive options, mark one as the Recommended option when a default is useful, explain the pros and cons of each option, and explicitly allow a free-form answer.
+  - When the PRD target is completely unknown, ask one broad orientation question with abstract choices when possible. Use an open question and answer template only when choices would invent a concrete project, product, user group, or pain point.
+  - When the user must make a decision, present choice-style options. Treat options as directions, not facts; the selected option authorizes that direction, but the PRD text still needs evidence from the user answer or later confirmation.
   - When enough information exists, summarize the extracted draft and offer confirmation or targeted edit options.
-- Do not ask field-by-field form questions. Ask open questions, extract structure, then confirm the extracted draft.
+- Do not ask field-by-field form questions. Ask one choice-first decision at a time, extract structure from the user's choice and supplements, then confirm the extracted draft.
 - Sharpen vague language inline. If the user says "fast", "friendly", "large scale", "secure", "stable", or a test-blocking qualifier such as "simple" or "complex", immediately propose a quantification, operational definition, or baseline test set.
 - Detect necessary but unstated topics as the PRD forms. If the project type implies a requirement area that the user did not mention, ask the user to choose `include` or `not_applicable`; do not silently add it, omit it, or defer it.
 - Capture meaningful decisions immediately in an internal decision log, especially trade-offs, thresholds, exclusions, accepted warnings, and any assumption or conflict that can change testcase triggers, boundaries, oracle, or coverage scope.
@@ -85,8 +86,10 @@ B. <Option label>
 C. <Option label>
    Pros: <why this is useful>
    Cons: <trade-off or risk>
+D. Other / supplement
+   Use when none of the options fit, when multiple options should be combined, or when the user wants to override the recommendation.
 
-You can also answer in your own words.
+You can also answer in your own words; the choices are directions, not facts.
 ```
 
 Necessary-topic disposition template:
@@ -183,13 +186,33 @@ Phase exit checklists:
 
 Start by aligning expectations:
 
-1. State that the PRD will be built in five parts: Frontmatter, Problem Statement, Requirements, Acceptance, Success Metrics.
+1. State that the PRD will be built around five core parts: Frontmatter, Problem Statement, Requirements, Acceptance, Success Metrics. Quality review, evidence records, and change-management sections may be added to make those five parts testcase-ready.
 2. State that functional requirements use MoSCoW priority at the requirement level: Must Have, Should Have, Could Have.
 3. State that acceptance criteria use Gherkin and that ambiguous language will be quantified as the conversation proceeds.
+4. State that Root mode will primarily use choice questions, and the user can always choose `Other / supplement` or add free-form context.
 
-Then ask what project, product, or feature the user wants a top-level PRD for. Provide an answer template, not a concrete recommendation:
+Then ask what project, product, or feature the user wants a top-level PRD for. If the target is vague, use a broad choice question that does not invent domain facts:
 
-> I want to build `<system/product/feature>` for `<target users>` to solve `<pain point or goal>`.
+```markdown
+Question: What kind of PRD are we creating?
+
+A. New product or system
+   Pros: Best when the business goal, users, and scope all need to be shaped.
+   Cons: Requires more discovery before requirements can be stable.
+B. New feature or module
+   Pros: Best when the surrounding product already exists.
+   Cons: Requires explicit parent context and integration boundaries.
+C. Improvement to an existing flow
+   Pros: Best when the current user journey and pain point are already known.
+   Cons: Requires current-state evidence and target behavior.
+D. Other / supplement
+   Use when the request does not fit these directions or needs extra context.
+
+You can also answer in your own words:
+I want to build `<system/product/feature>` for `<target users>` to solve `<pain point or goal>`.
+```
+
+If the user has already provided the target, skip the broad orientation question and ask the next smallest choice-first question. Do not provide a concrete recommendation before the target is clear.
 
 After the PRD target is clear, ask for or confirm the project name. Generate `doc_id`, `version`, and `scope` from the answer.
 
@@ -216,9 +239,27 @@ Minimum standard: `doc_id`, `version`, `author`, `status`, and `scope` are non-e
 
 ### P2 Problem Statement
 
-Ask an open question:
+Use choice-first elicitation to clarify the problem shape. Only use a fully open question when there is too little context to create non-leading abstract choices.
 
-> Who uses this system, in what situation, and what pain are they experiencing now?
+Example:
+
+```markdown
+Question: Which problem framing is closest?
+
+A. User task is too slow or manual
+   Pros: Makes workflow, time cost, and automation value easy to test.
+   Cons: Needs current step count, duration, or failure rate.
+B. User cannot complete a required action reliably
+   Pros: Makes error states, recovery, and success oracle explicit.
+   Cons: Needs concrete failure examples.
+C. Business or operations team lacks visibility/control
+   Pros: Makes reporting, audit, monitoring, and admin needs explicit.
+   Cons: Needs owner, data, and permission boundaries.
+D. Other / supplement
+   Use when the real pain is different or needs more detail.
+
+You can also answer in your own words: who uses this system, in what situation, and what pain are they experiencing now?
+```
 
 Extract:
 
@@ -230,12 +271,12 @@ Minimum standard: all three fields are non-empty, and at least one pain point de
 
 ### P3 Requirements
 
-Run four steps.
+Run five steps.
 
-1. Diverge: ask the user to list core capabilities in short sentences.
+1. Diverge: offer choice-style capability directions based on the Problem Statement, then ask the user to select, combine, remove, or supplement them. Do not present candidate capabilities as facts until the user confirms them.
 2. Classify: propose MoSCoW grouping and explain why each Must Have is necessary.
 3. Refine Must-Haves one at a time: ask for supported operations, abnormal cases, and measurable constraints.
-4. Add non-functional requirements: propose defaults such as P99 latency, availability, concurrency, security, logging, and observability; ask the user to confirm or adjust.
+4. Add non-functional requirements: propose choice-style options for latency, availability, concurrency, security, logging, and observability only when they are relevant; ask the user to confirm, adjust, or mark them not applicable.
 5. Run the necessary-but-unstated scan. For each relevant gap, ask whether to include it or mark it not applicable before moving to Acceptance.
 
 Each functional requirement must include:
@@ -307,13 +348,35 @@ Minimum standard: at least one metric, and every metric has both a target value 
 
 ## Derive Mode
 
-Use Derive mode for any lower-level PRD where the parent PRD and parent architecture already define the module boundary.
+Use Derive mode for any lower-level PRD where the parent PRD and architecture package already define the module boundary.
 
 Required inputs:
 
 - `parent_prd`: path or content of the parent PRD.
-- `parent_architecture`: path or content of the parent architecture design.
-- `target_module`: exact target module name or a close typo that can be resolved from the parent architecture.
+- `architecture_package`: path to an architecture package directory, the package `README.md`, or a zip containing the architecture Markdown files. The legacy `parent_architecture` single-file input is still accepted for older YAML architecture fixtures.
+- `target_module`: exact deployable module or bounded context name, or a close typo that can be resolved from the architecture package.
+- `target_granularity`: `auto`, `deployable_module`, or `bounded_context`. Use `auto` by default. If the same name can refer to both a deployable module and a bounded context, block and require an explicit granularity instead of guessing.
+
+Architecture package convention:
+
+```text
+architecture/
+  README.md
+  01-system-overview.md
+  02-module-partitioning.md
+  03-runtime-architecture.md
+  04-adr-summary.md
+  05-data-model.md
+  06-interface-contracts.md
+  07-technology-choices.md
+  08-deployment.md
+```
+
+Default evidence sources:
+
+- Always use `01-system-overview.md`, `02-module-partitioning.md`, `03-runtime-architecture.md`, `05-data-model.md`, and `06-interface-contracts.md` when present.
+- Use `04-adr-summary.md`, `07-technology-choices.md`, and `08-deployment.md` when they affect the target module's decisions, technical constraints, deployment, NFRs, risks, or testcase oracle.
+- A zip is only a transport form; read it as an architecture package after expanding or indexing the contained Markdown files.
 
 Prefer a deterministic backend over the LLM fallback. Backend lookup order:
 
@@ -324,34 +387,34 @@ Bundled backend command from the skill directory:
 
 ```powershell
 $env:PYTHONPATH = "scripts"
-python -m prd_flow --parent-prd <parent_prd> --parent-architecture <parent_architecture> --target-module <target_module> --output <output_prd>
+python -m prd_flow --parent-prd <parent_prd> --architecture-package <architecture_package> --target-module <target_module> --target-granularity auto --output <output_prd>
 ```
 
 Workspace backend command from the repository root:
 
 ```bash
-python -m prd_flow --parent-prd <parent_prd> --parent-architecture <parent_architecture> --target-module <target_module> --output <output_prd>
+python -m prd_flow --parent-prd <parent_prd> --architecture-package <architecture_package> --target-module <target_module> --target-granularity auto --output <output_prd>
 ```
 
 The backend requires `PyYAML`; in the complete skill package this dependency is declared in `scripts/requirements.txt`. If the current CLI uses a different argument shape, adapt to the local `prd_flow.main` parser but preserve the same logical inputs. Do not ask follow-up questions during Derive. If inputs are missing, report the missing input list and stop.
 
 If `prd_flow` is unavailable, use the self-contained LLM fallback so the skill remains installable outside the original repository. In the LLM fallback:
 
-1. Parse the parent PRD and parent architecture from the provided paths or pasted content.
-2. Locate `target_module` in the architecture by exact name first, then by close semantic match.
+1. Parse the parent PRD and architecture package from the provided paths or pasted content.
+2. Locate `target_module` in the architecture package by exact name first, then by close semantic match within the requested `target_granularity`.
 3. If no credible module match exists, stop and report candidate module names instead of inventing a boundary.
-4. Extract the module responsibility, public interfaces, dependencies, related parent requirements, constraints, and risks.
+4. Extract the module responsibility, granularity, public interfaces, dependencies, related parent requirements, constraints, risks, and source evidence files.
 5. Split related parent requirements into lower-level functional requirements. Preserve traceability with `parent_req`, `source`, and requirement-level MoSCoW priority.
 6. Carry relevant orphan parent requirements as `tentative: true` when they plausibly belong to the target module; otherwise report them as blocking or out of scope.
 7. Generate interface Happy Path and Error Path Gherkin scenarios tied to `@REQ-XXX`.
 8. Apply the same SMART-REQ, evidence-locked testcase, necessary-but-unstated, ambiguity, and Gherkin coverage quality gates before finalizing.
 
-Derive mode does not ask interactive follow-up questions. If the parent PRD or architecture omits a necessary topic for the target module and it cannot be inferred as explicitly in scope or explicitly not applicable, treat the output as quality blocked and report the upstream question. Do not guess a disposition.
+Derive mode does not ask interactive follow-up questions. If the parent PRD or architecture package omits a necessary topic for the target module and it cannot be inferred as explicitly in scope or explicitly not applicable, treat the output as quality blocked and report the upstream question. Do not guess a disposition.
 
 Expected backend behavior:
 
-- Parse parent PRD and parent architecture.
-- Confirm `target_module` exists or auto-match close names.
+- Parse parent PRD and architecture package directory, README.md, zip, or legacy single architecture file.
+- Confirm `target_module` exists at the selected granularity or auto-match close names.
 - Extract interfaces, dependencies, related requirements, and orphan requirements.
 - Include orphan requirements as `tentative: true` when policy allows.
 - Split parent requirements into lower-level functional requirements with `parent_req`.
@@ -669,6 +732,8 @@ Natural-language feedback is valid. Interpret "go back and change the target use
 - Do not ask field-by-field form questions in Root mode.
 - Do not ask multiple unrelated questions at once.
 - Do not present a single long recommended answer when the user needs to make a decision; use choice-style options with pros and cons and allow a free-form answer.
+- Do not force the user into provided options; every Root-mode choice question must allow `Other / supplement`.
+- Do not present choice options as validated facts before the user confirms or edits them.
 - Do not invent a concrete project, product, user group, or pain point when the user is only testing or invoking the skill.
 - Do not skip a phase quality check before moving on.
 - Do not generate architecture or code.

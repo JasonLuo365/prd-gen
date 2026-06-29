@@ -20,13 +20,17 @@ from prd_flow.quality.smart_req import SMARTResult
 def _make_args(
     parent_prd: str = "parent.md",
     parent_architecture: str = "arch.yaml",
+    architecture_package: str | None = None,
     target_module: str = "payment_gateway",
+    target_granularity: str = "auto",
     output: str | None = None,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         parent_prd=parent_prd,
         parent_architecture=parent_architecture,
+        architecture_package=architecture_package,
         target_module=target_module,
+        target_granularity=target_granularity,
         output=output,
         resume=None,
     )
@@ -93,11 +97,51 @@ def test_run_derive_mode_success(
     state = mock_save_session.call_args[0][0]
     assert state.mode == "derive"
     assert state.target_module == "payment_gateway"
+    mock_build_context.assert_called_once()
+    assert mock_build_context.call_args.args[1] == Path("arch.yaml")
+    assert mock_build_context.call_args.kwargs["target_granularity"] == "auto"
     assert state.draft_content["P1"]["doc_id"] == "PARENT-PRD-v1.0-PAYMENT-GATEWAY-v1.0"
     assert state.draft_content["P2"]["target_users"] == "系统用户"
     assert state.draft_content["P3"]["functional"][0]["id"] == "REQ-001-1"
     assert state.draft_content["P4"]["scenarios"][0]["scenario"] == "process_payment 正常调用"
     assert state.draft_content["P5"]["metrics"][0]["name"] == "接口响应时间"
+
+
+@patch("prd_flow.main.assemble_prd")
+@patch("prd_flow.main.save_session")
+@patch("prd_flow.main.build_derive_context")
+def test_run_derive_mode_accepts_architecture_package(
+    mock_build_context: MagicMock,
+    mock_save_session: MagicMock,
+    mock_assemble_prd: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """New architecture package input is preferred over legacy parent_architecture."""
+    mock_build_context.return_value = _make_success_context(
+        module_name="Execution Center",
+        related_requirements=[{"id": "REQ-001", "text": "Execution Center executes commands"}],
+        interfaces=[{"name": "Execute Command", "method": "gRPC"}],
+        dependencies=[],
+    )
+    mock_assemble_prd.return_value = "# Derive PRD\n"
+
+    output_file = tmp_path / "derive_output.md"
+    args = _make_args(
+        parent_architecture=None,
+        architecture_package="architecture",
+        target_module="Execution Center",
+        target_granularity="bounded_context",
+        output=str(output_file),
+    )
+
+    result = run_derive_mode(args)
+
+    assert result == EXIT_SUCCESS
+    assert output_file.exists()
+    mock_build_context.assert_called_once()
+    assert mock_build_context.call_args.args[1] == Path("architecture")
+    assert mock_build_context.call_args.kwargs["target_granularity"] == "bounded_context"
+    mock_save_session.assert_called_once()
 
 
 @patch("prd_flow.main.build_derive_context")

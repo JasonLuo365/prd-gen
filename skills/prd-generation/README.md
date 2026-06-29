@@ -30,10 +30,13 @@ From this `prd-generation/` directory:
 $env:PYTHONPATH = "scripts"
 python -m prd_flow `
   --parent-prd <parent_prd.md> `
-  --parent-architecture <parent_architecture.yaml> `
+  --architecture-package <architecture_dir_or_readme_or_zip> `
   --target-module <module_name> `
+  --target-granularity auto `
   --output <output_prd.md>
 ```
 
 The backend prefers PyYAML when available and falls back to a small built-in YAML
-subset parser for the current PRD/architecture formats.
+subset parser for legacy PRD/architecture fixtures. Derive mode accepts an
+architecture package directory, package README.md, zip, or legacy single
+architecture file.

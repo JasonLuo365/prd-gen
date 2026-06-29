@@ -291,20 +291,24 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     print("=" * 50)
 
     # 1. Validate inputs
-    if not args.parent_prd or not args.parent_architecture or not args.target_module:
-        print("Error: Derive mode requires --parent-prd, --parent-architecture, and --target-module")
+    architecture_input = getattr(args, "architecture_package", None) or getattr(args, "parent_architecture", None)
+    target_granularity = getattr(args, "target_granularity", "auto") or "auto"
+    if not args.parent_prd or not architecture_input or not args.target_module:
+        print("Error: Derive mode requires --parent-prd, --architecture-package, and --target-module")
         return EXIT_INPUT_ERROR
 
     print(f"\nTarget module: {args.target_module}")
+    print(f"Target granularity: {target_granularity}")
     print(f"Parent PRD: {args.parent_prd}")
-    print(f"Parent Architecture: {args.parent_architecture}")
+    print(f"Architecture package: {architecture_input}")
 
     # 2. Parse parent documents
     target_module = args.target_module
     context = build_derive_context(
         Path(args.parent_prd),
-        Path(args.parent_architecture),
+        Path(architecture_input),
         target_module,
+        target_granularity=target_granularity,
     )
 
     # 3. Auto-fix module name via edit distance matching
@@ -314,8 +318,9 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             target_module = similar
             context = build_derive_context(
                 Path(args.parent_prd),
-                Path(args.parent_architecture),
+                Path(architecture_input),
                 target_module,
+                target_granularity=target_granularity,
             )
         if not context["success"]:
             print(context["error"])
@@ -526,7 +531,8 @@ def run_derive_mode(args: argparse.Namespace) -> int:
 def _select_mode_interactive(args: argparse.Namespace) -> Mode:
     """交互式选择运行模式。如果命令行已提供derive参数则自动推断。"""
     # Shortcut: all derive inputs present -> skip question
-    if args.parent_prd and args.parent_architecture and args.target_module:
+    architecture_input = getattr(args, "architecture_package", None) or getattr(args, "parent_architecture", None)
+    if args.parent_prd and architecture_input and args.target_module:
         return Mode.DERIVE
 
     print("=" * 50)
@@ -555,10 +561,11 @@ def _prompt_derive_inputs(args: argparse.Namespace) -> argparse.Namespace:
     else:
         print(f"父 PRD 文件路径: {args.parent_prd}")
 
-    if not args.parent_architecture:
-        args.parent_architecture = input("父架构文档路径: ").strip()
+    architecture_input = getattr(args, "architecture_package", None) or getattr(args, "parent_architecture", None)
+    if not architecture_input:
+        args.architecture_package = input("架构包路径（目录、README.md 或 zip）: ").strip()
     else:
-        print(f"父架构文档路径: {args.parent_architecture}")
+        print(f"架构包路径: {architecture_input}")
 
     if not args.target_module:
         args.target_module = input("目标模块名称: ").strip()
@@ -579,8 +586,15 @@ def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="PRD Flow - Interactive PRD generation")
     parser.add_argument("--parent-prd", help="Path to parent PRD document")
-    parser.add_argument("--parent-architecture", help="Path to parent architecture document")
+    parser.add_argument("--architecture-package", help="Path to architecture package directory, README.md, or zip")
+    parser.add_argument("--parent-architecture", help="Legacy alias for --architecture-package")
     parser.add_argument("--target-module", help="Target module name for Derive mode")
+    parser.add_argument(
+        "--target-granularity",
+        choices=["auto", "deployable_module", "bounded_context"],
+        default="auto",
+        help="Target level for Derive mode",
+    )
     parser.add_argument("--resume", help="Path to session file to resume")
     parser.add_argument("--output", "-o", help="输出PRD文件路径")
 
