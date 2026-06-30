@@ -9,7 +9,7 @@ description: Use when deciding whether a layered PRD node with a PRD, testcase.f
 
 Leaf Gate is the stopping decision for an explainable layered development flow. Use it after a current-layer PRD, testcase, architecture, and architecture-validation pass exist, before choosing between deeper decomposition and vibecoding.
 
-The gate is not a prompt-only review. Run deterministic checks first, then perform semantic judgement with evidence.
+The gate is not a prompt-only review. Prepare traceability and risk evidence first, run deterministic checks second, then perform semantic judgement with evidence.
 
 ## Required Inputs
 
@@ -24,20 +24,42 @@ node-id/
   risks.yaml|json|md
 ```
 
+Multi-file architecture packages are also supported:
+
+```text
+node-id/
+  prd.md
+  testcase.feature
+  architecture/
+    output/
+      01-system-overview.md
+      02-module-partitioning.md
+      03-runtime-architecture.md
+      04-adr-summary.md
+      05-data-model.md
+      06-interface-contracts.md
+      07-technology-choices.md
+      08-deployment.md
+    validation-report.md
+```
+
+When `traceability.md` or `risks.md` is absent or stale, `scripts/run_leaf_gate.py` refreshes them from the current PRD, testcase, architecture package, and validation report before static checks. Use `--skip-prepare` only when intentionally reviewing existing evidence files without regenerating them.
+
 If files are named differently, map them explicitly in the report. Do not judge leaf readiness from a root PRD's high-level Acceptance Gherkin when a detailed `testcase.feature` exists. Judge the current node's testcase.
 
 ## Workflow
 
-1. Run the static checker:
+1. Run Leaf Gate. The script first prepares evidence, then runs static checks:
 
 ```bash
 python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.json
 ```
 
-2. Read `references/leaf_gate_rubric.md`.
-3. Read `references/llm_judge_prompt.md` and judge the five criteria against the PRD, feature file, architecture, traceability, risks, and static report.
-4. Produce a final `leaf-gate.report.json` using `references/report_template.json`.
-5. Decide with these statuses only:
+2. Confirm the generated `traceability.md` and `risks.md` reflect the current node scope. If they show missing testcase coverage, missing architecture evidence, or open high risk, do not override that gap in the LLM judgement.
+3. Read `references/leaf_gate_rubric.md`.
+4. Read `references/llm_judge_prompt.md` and judge the five criteria against the PRD, feature file, architecture, traceability, risks, and static report.
+5. Produce a final `leaf-gate.report.json` using `references/report_template.json`.
+6. Decide with these statuses only:
 
 | Decision | Meaning |
 | --- | --- |
@@ -54,6 +76,7 @@ python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.
 - If evidence is missing, choose `NEEDS_SPEC_REFINEMENT`, not PASS.
 - If unresolved high risk remains, choose `HUMAN_REVIEW` or `NEEDS_DECOMPOSITION`.
 - If a scenario is a system-level story hiding multiple subsystems, fail behavior complexity even if the scenario count is low.
+- Do not treat generated `traceability.md` or `risks.md` as proof by themselves. They are evidence indexes; judge the underlying PRD, testcase, architecture, and validation report.
 
 ## Five Criteria
 
@@ -75,6 +98,8 @@ Use the rubric file for full details. In brief:
 | Treating low scenario count as leaf readiness | Check hidden domains and scenario breadth. |
 | Letting the LLM decide without static checks | Run the checker first and cite its output. |
 | Treating missing risk files as no risk | Mark the node as `NEEDS_SPEC_REFINEMENT`. |
+| Feeding an entire architecture working directory | Prefer `architecture/output` plus `architecture/validation-report.md`; avoid intermediate drafts unless cited by the final package. |
+| Treating generated evidence as self-certifying | Use traceability and risks as indexes back to source artifacts. |
 | Passing a node with vague Then clauses | Fail C4 unless outcomes are observable and assertable. |
 
 ## Resources

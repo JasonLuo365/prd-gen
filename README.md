@@ -87,9 +87,30 @@ node-id/
   prd.md
   testcase.feature
   architecture.yaml|json|md
-  traceability.yaml|json|md
-  risks.yaml|json|md
+  traceability.md
+  risks.md
 ```
+
+也支持多文件架构包：
+
+```text
+node-id/
+  prd.md
+  testcase.feature
+  architecture/
+    output/
+      01-system-overview.md
+      02-module-partitioning.md
+      03-runtime-architecture.md
+      04-adr-summary.md
+      05-data-model.md
+      06-interface-contracts.md
+      07-technology-choices.md
+      08-deployment.md
+    validation-report.md
+```
+
+运行 Leaf Gate 时会先执行 prepare evidence：根据当前节点的 PRD、testcase 和架构包自动生成或刷新 `traceability.md` 与 `risks.md`，然后再进入静态检查。`architecture/output` 是主要架构证据；`architecture/validation-report.md` 会作为架构验证、追溯和风险证据一起读取。
 
 静态检查命令：
 
@@ -126,8 +147,10 @@ outputs/high-school-math-tutor/
     prd.md
     testcase.feature
     architecture/
-    traceability.md
-    risks.md
+      output/
+      validation-report.md
+    traceability.md      # Leaf Gate prepare evidence 生成
+    risks.md             # Leaf Gate prepare evidence 生成
     leaf-gate.report.json
   L1-answer-flow/
     prd.md
@@ -151,6 +174,7 @@ outputs/high-school-math-tutor/
   tests\test_main_derive.py `
   tests\test_mode_detector.py `
   tests\test_architecture_package_parser.py `
+  tests\test_leaf_gate.py `
   tests\test_prd_generation_skill.py
 ```
 

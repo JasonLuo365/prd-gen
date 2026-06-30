@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -44,12 +44,23 @@ class ArtifactSet:
     architecture: Optional[Path]
     traceability: Optional[Path]
     risks: Optional[Path]
+    architecture_files: List[Path] = field(default_factory=list)
+    architecture_validation: Optional[Path] = None
 
 
 def read_text(path: Optional[Path]) -> str:
     if not path or not path.exists():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_texts(paths: Iterable[Path]) -> str:
+    chunks = []
+    for path in paths:
+        text = read_text(path)
+        if text:
+            chunks.append(f"\n\n<!-- source: {path.name} -->\n{text}")
+    return "\n".join(chunks)
 
 
 def find_first(node_dir: Path, names: Iterable[str], patterns: Iterable[str]) -> Optional[Path]:
@@ -64,16 +75,43 @@ def find_first(node_dir: Path, names: Iterable[str], patterns: Iterable[str]) ->
     return None
 
 
+def markdown_files(path: Path) -> List[Path]:
+    return sorted(file for file in path.glob("*.md") if file.is_file())
+
+
+def find_architecture_artifacts(node_dir: Path) -> Tuple[Optional[Path], List[Path], Optional[Path]]:
+    architecture_file = find_first(
+        node_dir,
+        ["architecture.yaml", "architecture.yml", "architecture.json", "architecture.md"],
+        ["*architecture*.yaml", "*architecture*.yml", "*architecture*.json", "*architecture*.md", "*arch*.md"],
+    )
+    if architecture_file:
+        return architecture_file, [architecture_file], None
+
+    architecture_dir = node_dir / "architecture"
+    if not architecture_dir.exists() or not architecture_dir.is_dir():
+        return None, [], None
+
+    output_dir = architecture_dir / "output"
+    if output_dir.exists() and output_dir.is_dir():
+        files = markdown_files(output_dir)
+        validation = architecture_dir / "validation-report.md"
+        if validation.exists() and validation.is_file():
+            files.append(validation)
+        return output_dir, files, validation if validation.exists() else None
+
+    files = markdown_files(architecture_dir)
+    validation = architecture_dir / "validation-report.md"
+    return architecture_dir, files, validation if validation.exists() else None
+
+
 def find_artifacts(node_dir: Path) -> ArtifactSet:
+    architecture, architecture_files, architecture_validation = find_architecture_artifacts(node_dir)
     return ArtifactSet(
         node_dir=node_dir,
         prd=find_first(node_dir, ["prd.md", "PRD.md"], ["*prd*.md", "*PRD*.md"]),
         feature=find_first(node_dir, ["testcase.feature"], ["*.feature"]),
-        architecture=find_first(
-            node_dir,
-            ["architecture.yaml", "architecture.yml", "architecture.json", "architecture.md"],
-            ["*architecture*.yaml", "*architecture*.yml", "*architecture*.json", "*architecture*.md", "*arch*.md"],
-        ),
+        architecture=architecture,
         traceability=find_first(
             node_dir,
             ["traceability.yaml", "traceability.yml", "traceability.json", "traceability.md"],
@@ -84,6 +122,8 @@ def find_artifacts(node_dir: Path) -> ArtifactSet:
             ["risks.yaml", "risks.yml", "risks.json", "risks.md", "risk_register.md"],
             ["*risk*.yaml", "*risk*.yml", "*risk*.json", "*risk*.md"],
         ),
+        architecture_files=architecture_files,
+        architecture_validation=architecture_validation,
     )
 
 
@@ -97,6 +137,21 @@ def status(level: str, reason: str, evidence: Optional[Dict[str, Any]] = None) -
 
 def count_requirements(prd_text: str) -> List[str]:
     return sorted(set(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", prd_text)))
+
+
+def extract_requirements(prd_text: str) -> List[Dict[str, str]]:
+    requirements: Dict[str, Dict[str, str]] = {}
+    section = ""
+    for line in prd_text.splitlines():
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if heading:
+            section = heading.group(1)
+        for req_id in re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line):
+            clean = re.sub(r"^\s*[-*]\s*", "", line).strip()
+            clean = re.sub(rf"^\[?{re.escape(req_id)}\]?\s*", "", clean).strip()
+            clean = clean or line.strip()
+            requirements.setdefault(req_id, {"id": req_id, "text": clean, "section": section})
+    return [requirements[req_id] for req_id in sorted(requirements)]
 
 
 def count_open_questions(prd_text: str) -> int:
@@ -131,6 +186,7 @@ def parse_feature(feature_text: str) -> Dict[str, Any]:
         prefix = feature_text[prefix_start:start]
         tags = tag_re.findall(prefix)
         req_tags = sorted(set(tag[1:] for tag in tags if re.match(r"@(?:REQ|NFR)-\d{3,}", tag)))
+        trace_tags = sorted(set(tag[1:] for tag in tags if re.match(r"@(?:REQ|NFR|MET)-\d{3,}", tag)))
         steps = step_re.findall(block)
         example_rows = 0
         if "Scenario Outline" in match.group(0):
@@ -142,6 +198,7 @@ def parse_feature(feature_text: str) -> Dict[str, Any]:
                 "outline": "Scenario Outline" in match.group(0),
                 "tags": tags,
                 "req_tags": req_tags,
+                "trace_tags": trace_tags,
                 "step_count": len(steps),
                 "example_rows": example_rows,
             }
@@ -152,7 +209,7 @@ def parse_feature(feature_text: str) -> Dict[str, Any]:
     expanded_case_count = sum(max(1, item["example_rows"]) for item in scenarios)
     max_steps = max((item["step_count"] for item in scenarios), default=0)
     max_req_tags = max((len(item["req_tags"]) for item in scenarios), default=0)
-    untagged = [item["name"] for item in scenarios if not item["req_tags"]]
+    untagged = [item["name"] for item in scenarios if not item["trace_tags"]]
     covered_reqs = sorted({tag for item in scenarios for tag in item["req_tags"]})
 
     return {
@@ -165,6 +222,188 @@ def parse_feature(feature_text: str) -> Dict[str, Any]:
         "covered_requirements": covered_reqs,
         "scenarios": scenarios,
     }
+
+
+def scenario_map(feature: Dict[str, Any]) -> Dict[str, List[str]]:
+    mapping: Dict[str, List[str]] = {}
+    for scenario in feature["scenarios"]:
+        for req_id in scenario["req_tags"]:
+            mapping.setdefault(req_id, []).append(str(scenario["name"]))
+    return mapping
+
+
+def detect_deferred_requirements(prd_text: str, feature_text: str) -> set[str]:
+    deferred: set[str] = set()
+    for line in feature_text.splitlines():
+        if re.search(r"deferred|延期|未进入|缺少确定|未冻结|不生成", line, flags=re.IGNORECASE):
+            deferred.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+
+    in_could_have = False
+    for line in prd_text.splitlines():
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if heading:
+            title = heading.group(1).strip().lower()
+            in_could_have = "could have" in title
+            continue
+        if in_could_have:
+            deferred.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+    return deferred
+
+
+def relative_to_node(path: Path, node_dir: Path) -> str:
+    try:
+        return str(path.relative_to(node_dir)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def architecture_evidence(req_id: str, architecture_files: Iterable[Path], node_dir: Path) -> List[str]:
+    evidence = []
+    for path in architecture_files:
+        if req_id in read_text(path):
+            evidence.append(relative_to_node(path, node_dir))
+    return evidence
+
+
+def build_traceability_text(artifacts: ArtifactSet) -> str:
+    prd_text = read_text(artifacts.prd)
+    feature_text = read_text(artifacts.feature)
+    feature = parse_feature(feature_text)
+    scenarios_by_req = scenario_map(feature)
+    deferred = detect_deferred_requirements(prd_text, feature_text)
+    rows = []
+    for requirement in extract_requirements(prd_text):
+        req_id = requirement["id"]
+        scenarios = scenarios_by_req.get(req_id, [])
+        evidence = architecture_evidence(req_id, artifacts.architecture_files, artifacts.node_dir)
+        if scenarios and evidence:
+            status_value = "covered"
+        elif req_id in deferred:
+            status_value = "deferred"
+        elif not scenarios:
+            status_value = "missing_testcase"
+        elif not evidence:
+            status_value = "missing_architecture"
+        else:
+            status_value = "covered"
+        rows.append(
+            "| {req_id} | {text} | {scenarios} | {evidence} | {status} |".format(
+                req_id=req_id,
+                text=requirement["text"].replace("|", "\\|"),
+                scenarios=", ".join(scenarios) if scenarios else "none",
+                evidence=", ".join(evidence) if evidence else "none",
+                status=status_value,
+            )
+        )
+
+    return "\n".join(
+        [
+            "# Traceability",
+            "",
+            "> Generated by Leaf Gate prepare evidence from the current node PRD, testcase, and architecture package.",
+            "",
+            "| Requirement | Requirement text | Testcase scenarios | Architecture evidence | Status |",
+            "| --- | --- | --- | --- | --- |",
+            *rows,
+            "",
+        ]
+    )
+
+
+def parse_traceability_inactive_requirements(traceability_text: str) -> set[str]:
+    inactive = set()
+    for line in traceability_text.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        lowered = line.lower()
+        if "deferred" not in lowered and "excluded" not in lowered and "not_applicable" not in lowered:
+            continue
+        inactive.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+    return inactive
+
+
+def extract_validation_risk_rows(architecture_files: Iterable[Path], node_dir: Path) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for path in architecture_files:
+        text = read_text(path)
+        in_risk_section = False
+        for line in text.splitlines():
+            heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+            if heading:
+                title = heading.group(1)
+                if re.search(r"risk|风险|缓解", title, flags=re.IGNORECASE):
+                    in_risk_section = True
+                    continue
+                if in_risk_section:
+                    break
+            if not in_risk_section or not line.lstrip().startswith("|"):
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if len(cells) < 3 or cells[0] in {"风险", "Risk"} or set(cells[0]) <= {"-"}:
+                continue
+            rows.append(
+                {
+                    "risk": cells[0],
+                    "impact": cells[1],
+                    "mitigation": cells[2],
+                    "evidence": relative_to_node(path, node_dir),
+                }
+            )
+    return rows
+
+
+def build_risks_text(artifacts: ArtifactSet) -> str:
+    traceability_text = build_traceability_text(artifacts)
+    rows = []
+    for item in extract_validation_risk_rows(artifacts.architecture_files, artifacts.node_dir):
+        mitigation = item["mitigation"]
+        status_value = "open" if re.search(r"未来|待|未|TODO|TBD", mitigation, flags=re.IGNORECASE) else "mitigated"
+        severity = "high" if re.search(r"高风险|不可逆|删除|合规", item["risk"]) else "medium"
+        rows.append(
+            "| {risk} | {impact} | {severity} | {status} | {mitigation} | {evidence} |".format(
+                risk=item["risk"].replace("|", "\\|"),
+                impact=item["impact"].replace("|", "\\|"),
+                severity=severity,
+                status=status_value,
+                mitigation=mitigation.replace("|", "\\|"),
+                evidence=item["evidence"],
+            )
+        )
+
+    for line in traceability_text.splitlines():
+        if not line.lstrip().startswith("|") or "missing_" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        rows.append(
+            "| Coverage gap for {req_id} | Automatic verification may be incomplete | high | open | Add missing testcase or architecture evidence before Leaf Gate can pass | traceability.md |".format(
+                req_id=cells[0]
+            )
+        )
+
+    if not rows:
+        rows.append("| No identified residual risk | Current evidence has no explicit risk rows. | low | accepted | n/a | generated |")
+
+    return "\n".join(
+        [
+            "# Risks",
+            "",
+            "> Generated by Leaf Gate prepare evidence from traceability gaps and architecture validation evidence.",
+            "",
+            "| Risk | Impact | Severity | Status | Mitigation | Evidence |",
+            "| --- | --- | --- | --- | --- | --- |",
+            *rows,
+            "",
+        ]
+    )
+
+
+def prepare_evidence(artifacts: ArtifactSet) -> ArtifactSet:
+    if artifacts.prd and artifacts.feature:
+        (artifacts.node_dir / "traceability.md").write_text(build_traceability_text(artifacts), encoding="utf-8")
+        (artifacts.node_dir / "risks.md").write_text(build_risks_text(artifacts), encoding="utf-8")
+    return find_artifacts(artifacts.node_dir)
 
 
 def contract_fields(architecture_text: str) -> Dict[str, bool]:
@@ -225,7 +464,7 @@ def load_json(path: Optional[Path]) -> Dict[str, Any]:
 def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[str, Any]:
     prd_text = read_text(artifacts.prd)
     feature_text = read_text(artifacts.feature)
-    architecture_text = read_text(artifacts.architecture)
+    architecture_text = read_texts(artifacts.architecture_files) if artifacts.architecture_files else read_text(artifacts.architecture)
     traceability_text = read_text(artifacts.traceability)
     risk_text = read_text(artifacts.risks)
 
@@ -277,7 +516,8 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
         c3_failures.append("TODO/TBD markers found")
 
     covered = set(feature["covered_requirements"])
-    requirement_set = set(requirements)
+    inactive_requirements = parse_traceability_inactive_requirements(traceability_text)
+    requirement_set = set(requirements) - inactive_requirements
     unmapped_requirements = sorted(requirement_set - covered)
     c4_failures = []
     if not artifacts.traceability:
@@ -303,6 +543,8 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
             "prd": str(artifacts.prd) if artifacts.prd else None,
             "feature": str(artifacts.feature) if artifacts.feature else None,
             "architecture": str(artifacts.architecture) if artifacts.architecture else None,
+            "architecture_files": [str(path) for path in artifacts.architecture_files],
+            "architecture_validation": str(artifacts.architecture_validation) if artifacts.architecture_validation else None,
             "traceability": str(artifacts.traceability) if artifacts.traceability else None,
             "risks": str(artifacts.risks) if artifacts.risks else None,
             "missing": missing_artifacts,
@@ -335,6 +577,7 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
             "; ".join(c4_failures) if c4_failures else "Static traceability checks passed.",
             {
                 "unmapped_requirements": unmapped_requirements,
+                "deferred_or_excluded_requirements": sorted(inactive_requirements),
                 "untagged_scenarios": feature["untagged_scenarios"],
                 "covered_requirements": feature["covered_requirements"],
             },
@@ -421,9 +664,11 @@ def combine_with_llm(static_report: Dict[str, Any], llm_path: Path, thresholds: 
     return "LEAF_READY", "Static checks and LLM judgement passed.", llm_report
 
 
-def build_report(node_dir: Path, llm_path: Optional[Path]) -> Dict[str, Any]:
+def build_report(node_dir: Path, llm_path: Optional[Path], prepare: bool = True) -> Dict[str, Any]:
     thresholds = load_thresholds(node_dir)
     artifacts = find_artifacts(node_dir)
+    if prepare:
+        artifacts = prepare_evidence(artifacts)
     checks = static_checks(artifacts, thresholds)
     decision, reason = static_decision(checks)
     llm_report: Dict[str, Any] = {}
@@ -455,12 +700,13 @@ def main() -> int:
     parser.add_argument("node_dir", type=Path, help="Directory containing PRD node artifacts.")
     parser.add_argument("--output", type=Path, help="Where to write report JSON. Defaults to stdout.")
     parser.add_argument("--llm-judgement", type=Path, help="Optional LLM judgement JSON to combine with static checks.")
+    parser.add_argument("--skip-prepare", action="store_true", help="Skip generated traceability.md and risks.md refresh.")
     args = parser.parse_args()
 
     if not args.node_dir.exists() or not args.node_dir.is_dir():
         raise SystemExit(f"Node directory does not exist: {args.node_dir}")
 
-    report = build_report(args.node_dir, args.llm_judgement)
+    report = build_report(args.node_dir, args.llm_judgement, prepare=not args.skip_prepare)
     payload = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
