@@ -112,6 +112,15 @@ node-id/
 
 运行 Leaf Gate 时会先执行 prepare evidence：根据当前节点的 PRD、testcase 和架构包自动生成或刷新 `traceability.md` 与 `risks.md`，然后再进入静态检查。`architecture/output` 是主要架构证据；`architecture/validation-report.md` 会作为架构验证、追溯和风险证据一起读取。
 
+`traceability.md` 中的架构证据会标注强度：
+
+- `strong`：直接编号命中，或同时命中架构契约、边界/数值和需求关键词，算覆盖。
+- `medium`：命中明确模块/接口/事件和多个需求关键词，算覆盖。
+- `weak`：只有泛关键词或部分词命中，不算覆盖。
+- `none`：没有可用架构证据，不算覆盖。
+
+`weak` 和 `none` 会让 C4 失败，并返回 `NEEDS_SPEC_REFINEMENT`，不会自动进入人工复核。
+
 静态检查命令：
 
 ```powershell

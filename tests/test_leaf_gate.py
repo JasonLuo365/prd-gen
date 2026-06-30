@@ -83,7 +83,6 @@ ProblemImage 状态包含 uploaded、validating、valid、invalid。
 - **状态**：uploaded -> validating -> valid / invalid。
 - **副作用**：写入图片元数据并发送 ImageUploaded 事件。
 - **依赖**：Object Storage。
-- **追溯**：REQ-001。
 """,
         encoding="utf-8",
     )
@@ -94,7 +93,7 @@ ProblemImage 状态包含 uploaded、validating、valid、invalid。
 
 | 风险 | 影响 | 缓解措施 |
 | --- | --- | --- |
-| 对象存储上传失败 | REQ-001 | 允许重新上传并记录审计 |
+| 对象存储上传失败 | 图片上传 | 允许重新上传并记录审计 |
 """,
         encoding="utf-8",
     )
@@ -142,3 +141,60 @@ def test_deferred_requirements_and_metric_scenarios_do_not_fail_traceability(tmp
 
     assert "REQ-002" not in c4_evidence["unmapped_requirements"]
     assert "图片上传校验响应 P95" not in c4_evidence["untagged_scenarios"]
+
+
+def test_architecture_evidence_strength_covers_without_req_id(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L0-root"
+    _write_node(node_dir)
+
+    report = leaf_gate.build_report(node_dir, None)
+    traceability_text = (node_dir / "traceability.md").read_text(encoding="utf-8")
+    c4_evidence = report["static_checks"]["C4_verifiability"]["evidence"]
+
+    assert "| REQ-001 |" in traceability_text
+    assert "06-interface-contracts.md" in traceability_text
+    assert "| strong | covered |" in traceability_text
+    assert c4_evidence["architecture_evidence_gaps"] == []
+
+
+def test_weak_architecture_evidence_fails_without_human_review(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L0-root"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text(
+        """# Requirements
+
+- [REQ-001] 系统应支持学生上传 3 张 JPG/PNG 图片。
+""",
+        encoding="utf-8",
+    )
+    (node_dir / "testcase.feature").write_text(
+        """Feature: 图片上传
+
+  @REQ-001 @TC-001
+  Scenario: 上传图片
+    Given 学生已登录
+    When 学生上传 3 张 JPG 图片
+    Then 系统接受图片
+""",
+        encoding="utf-8",
+    )
+    output_dir = node_dir / "architecture" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "01-system-overview.md").write_text(
+        """# 01 - System Overview
+
+系统包含图片相关能力。
+""",
+        encoding="utf-8",
+    )
+
+    report = leaf_gate.build_report(node_dir, None)
+    traceability_text = (node_dir / "traceability.md").read_text(encoding="utf-8")
+    c4 = report["static_checks"]["C4_verifiability"]
+
+    assert "| weak | weak_evidence |" in traceability_text
+    assert c4["status"] == "fail"
+    assert c4["evidence"]["architecture_evidence_gaps"] == ["REQ-001: weak_evidence"]
+    assert report["decision"] == "NEEDS_SPEC_REFINEMENT"

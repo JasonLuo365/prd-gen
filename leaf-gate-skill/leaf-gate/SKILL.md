@@ -45,6 +45,17 @@ node-id/
 
 When `traceability.md` or `risks.md` is absent or stale, `scripts/run_leaf_gate.py` refreshes them from the current PRD, testcase, architecture package, and validation report before static checks. Use `--skip-prepare` only when intentionally reviewing existing evidence files without regenerating them.
 
+Generated traceability uses deterministic evidence strength:
+
+| Strength | Meaning | Gate effect |
+| --- | --- | --- |
+| `strong` | Direct REQ/NFR ID match, or architecture contract evidence plus boundary/value terms and product terms. | Counts as covered. |
+| `medium` | Architecture contract evidence plus multiple product/action terms, or boundary/value terms plus product terms. | Counts as covered. |
+| `weak` | Only broad or partial terms match. | Fails C4 as `weak_evidence`; do not send to human review. |
+| `none` | No usable architecture evidence. | Fails C4 as `missing_architecture`. |
+
+Weak or missing architecture evidence is a spec refinement issue, not a human-review shortcut. The static decision should be `NEEDS_SPEC_REFINEMENT` unless behavior complexity also fails, in which case `NEEDS_DECOMPOSITION` takes priority.
+
 If files are named differently, map them explicitly in the report. Do not judge leaf readiness from a root PRD's high-level Acceptance Gherkin when a detailed `testcase.feature` exists. Judge the current node's testcase.
 
 ## Workflow
@@ -77,6 +88,7 @@ python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.
 - If unresolved high risk remains, choose `HUMAN_REVIEW` or `NEEDS_DECOMPOSITION`.
 - If a scenario is a system-level story hiding multiple subsystems, fail behavior complexity even if the scenario count is low.
 - Do not treat generated `traceability.md` or `risks.md` as proof by themselves. They are evidence indexes; judge the underlying PRD, testcase, architecture, and validation report.
+- Do not upgrade `weak_evidence` during semantic judgement. Weak evidence remains a static C4 failure and should lead to spec refinement or decomposition, not `HUMAN_REVIEW`.
 
 ## Five Criteria
 
@@ -100,6 +112,7 @@ Use the rubric file for full details. In brief:
 | Treating missing risk files as no risk | Mark the node as `NEEDS_SPEC_REFINEMENT`. |
 | Feeding an entire architecture working directory | Prefer `architecture/output` plus `architecture/validation-report.md`; avoid intermediate drafts unless cited by the final package. |
 | Treating generated evidence as self-certifying | Use traceability and risks as indexes back to source artifacts. |
+| Treating weak keyword overlap as coverage | Require `strong` or `medium`; weak evidence fails C4. |
 | Passing a node with vague Then clauses | Fail C4 unless outcomes are observable and assertable. |
 
 ## Resources

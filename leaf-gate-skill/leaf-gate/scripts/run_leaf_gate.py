@@ -257,12 +257,205 @@ def relative_to_node(path: Path, node_dir: Path) -> str:
         return str(path)
 
 
-def architecture_evidence(req_id: str, architecture_files: Iterable[Path], node_dir: Path) -> List[str]:
-    evidence = []
+TRACE_TERMS = [
+    "JPG",
+    "PNG",
+    "P95",
+    "图片",
+    "上传",
+    "格式",
+    "数量",
+    "上限",
+    "拒绝",
+    "错误",
+    "损坏",
+    "题目",
+    "公式",
+    "求解",
+    "基础水平",
+    "薄弱",
+    "中等",
+    "较好",
+    "答疑",
+    "提示",
+    "分层提示",
+    "轮次",
+    "完整解答",
+    "最终答案",
+    "关键计算结果",
+    "隐私",
+    "数据",
+    "删除",
+    "读取",
+    "不可读取",
+    "模型训练",
+    "手机号",
+    "短信验证码",
+    "验证码",
+    "登录",
+    "有效期",
+    "重发",
+    "失效",
+    "成功率",
+    "可追溯",
+    "会话",
+    "知识点",
+    "术语",
+    "人教",
+]
+
+TRACE_SYNONYMS = {
+    "图片": ["image", "images", "ProblemImage", "ImageUploaded", "ImageValidated", "Object Storage"],
+    "上传": ["upload", "uploaded", "POST /api/v1/problems/images", "ImageUploaded"],
+    "格式": ["mime", "content-type", "jpg", "png"],
+    "基础水平": ["proficiencyLevel", "ProficiencyLevel"],
+    "答疑": ["tutoring", "Tutoring Session"],
+    "提示": ["hint", "HintGenerated", "AI Tutoring"],
+    "分层提示": ["hint", "HintGenerated", "AI Tutoring"],
+    "完整解答": ["solution", "SolutionGenerated", "Solution Generation"],
+    "最终答案": ["solution", "SolutionGenerated"],
+    "隐私": ["PrivacyConsent", "PrivacyConsentAcknowledged", "Compliance"],
+    "数据": ["Data", "Retention", "Compliance", "DataDeleted"],
+    "删除": ["delete", "deleted", "DataDeleted", "Retention", "Lifecycle"],
+    "不可读取": ["unreadable", "DataDeleted", "Retention", "410"],
+    "模型训练": ["model training", "training", "LLM Service"],
+    "手机号": ["phoneNumber", "Identity", "auth/otp"],
+    "短信验证码": ["otp", "SmsVerificationCode", "auth/otp", "Identity"],
+    "验证码": ["otp", "SmsVerificationCode", "auth/otp", "Identity", "Redis"],
+    "登录": ["login", "StudentLoggedIn", "Identity"],
+    "重发": ["retryAfterSeconds", "Too Many Requests", "429"],
+    "失效": ["expired", "Gone", "410", "invalid"],
+    "成功率": ["success rate", "成功率", "Prometheus", "Grafana"],
+    "可追溯": ["trace", "traceability", "foreign key", "关联"],
+    "会话": ["session", "TutoringSession", "SessionClosed"],
+    "知识点": ["knowledge", "术语映射"],
+    "术语": ["terminology", "术语映射"],
+}
+
+ARCHITECTURE_MARKERS = [
+    r"\bmodule\b",
+    r"\bbc\b",
+    r"\bapi\b",
+    r"\bpost\b",
+    r"/api/",
+    r"\bevent\b",
+    r"\bworker\b",
+    "模块",
+    "接口",
+    "契约",
+    "输入",
+    "输出",
+    "错误码",
+    "状态",
+    "事件",
+    "聚合",
+    "部署",
+    "QAS",
+    "UC-",
+    "ASR",
+    "Redis",
+    "PostgreSQL",
+    "Object Storage",
+]
+
+
+def normalize_for_match(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
+
+
+def extract_boundary_terms(text: str) -> List[str]:
+    terms: set[str] = set()
+    range_pattern = re.compile(r"(\d+)\s*(?:到|至|-|~|–)\s*(\d+)\s*(张|MB|秒|分钟|天|轮|次|位)?", re.IGNORECASE)
+    for start, end, unit in range_pattern.findall(text):
+        unit = unit or ""
+        terms.update({f"{start}到{end}{unit}", f"{start}-{end}", f"{start}–{end}"})
+        if unit:
+            terms.update({f"{start}{unit}", f"{end}{unit}"})
+    single_pattern = re.compile(r"(?:<=|>=|<|>|=)?\s*(\d+)\s*(张|MB|秒|分钟|天|轮|次|位)", re.IGNORECASE)
+    for value, unit in single_pattern.findall(text):
+        terms.add(f"{value}{unit}")
+    if "P95" in text or "p95" in text.lower():
+        terms.add("P95")
+    if "JPG" in text.upper():
+        terms.add("JPG")
+    if "PNG" in text.upper():
+        terms.add("PNG")
+    return sorted(terms)
+
+
+def extract_trace_terms(text: str) -> List[str]:
+    normalized = normalize_for_match(text)
+    terms = []
+    for term in TRACE_TERMS:
+        if normalize_for_match(term) in normalized:
+            terms.append(term)
+    terms.extend(extract_boundary_terms(text))
+    return sorted(set(terms), key=lambda item: (len(item), item), reverse=True)
+
+
+def term_variants(term: str) -> List[str]:
+    variants = [term]
+    variants.extend(TRACE_SYNONYMS.get(term, []))
+    if term.upper() in {"JPG", "PNG", "P95"}:
+        variants.extend([term.lower(), term.upper()])
+    return variants
+
+
+def has_match(term: str, architecture_text: str) -> bool:
+    normalized_arch = normalize_for_match(architecture_text)
+    return any(normalize_for_match(variant) in normalized_arch for variant in term_variants(term))
+
+
+def has_architecture_marker(text: str) -> bool:
+    return any(re.search(marker, text, flags=re.IGNORECASE) for marker in ARCHITECTURE_MARKERS)
+
+
+def architecture_evidence(
+    req_id: str,
+    requirement_text: str,
+    scenario_names: List[str],
+    architecture_files: Iterable[Path],
+    node_dir: Path,
+) -> Dict[str, Any]:
+    references = []
+    best_strength = "none"
+    best_rank = 0
+    all_matched_terms: set[str] = set()
+    context_text = " ".join([requirement_text, *scenario_names])
+    trace_terms = extract_trace_terms(context_text)
+    boundary_terms = set(extract_boundary_terms(context_text))
+    ranks = {"none": 0, "weak": 1, "medium": 2, "strong": 3}
     for path in architecture_files:
-        if req_id in read_text(path):
-            evidence.append(relative_to_node(path, node_dir))
-    return evidence
+        text = read_text(path)
+        matched_terms = [term for term in trace_terms if has_match(term, text)]
+        boundary_hits = [term for term in matched_terms if term in boundary_terms]
+        marker = has_architecture_marker(text)
+        if req_id in text:
+            strength = "strong"
+        elif marker and boundary_hits and len(matched_terms) >= 2:
+            strength = "strong"
+        elif marker and len(matched_terms) >= 2:
+            strength = "medium"
+        elif boundary_hits and len(matched_terms) >= 2:
+            strength = "medium"
+        elif matched_terms:
+            strength = "weak"
+        else:
+            strength = "none"
+
+        if ranks[strength] > 0:
+            shown_terms = ", ".join(matched_terms[:6])
+            references.append(f"{relative_to_node(path, node_dir)} ({strength}: {shown_terms})")
+            all_matched_terms.update(matched_terms)
+        if ranks[strength] > best_rank:
+            best_strength = strength
+            best_rank = ranks[strength]
+
+    return {
+        "references": references,
+        "strength": best_strength,
+        "matched_terms": sorted(all_matched_terms),
+    }
 
 
 def build_traceability_text(artifacts: ArtifactSet) -> str:
@@ -275,23 +468,34 @@ def build_traceability_text(artifacts: ArtifactSet) -> str:
     for requirement in extract_requirements(prd_text):
         req_id = requirement["id"]
         scenarios = scenarios_by_req.get(req_id, [])
-        evidence = architecture_evidence(req_id, artifacts.architecture_files, artifacts.node_dir)
-        if scenarios and evidence:
+        evidence = architecture_evidence(
+            req_id,
+            requirement["text"],
+            scenarios,
+            artifacts.architecture_files,
+            artifacts.node_dir,
+        )
+        evidence_references = evidence["references"]
+        evidence_strength = evidence["strength"]
+        if scenarios and evidence_strength in {"strong", "medium"}:
             status_value = "covered"
         elif req_id in deferred:
             status_value = "deferred"
         elif not scenarios:
             status_value = "missing_testcase"
-        elif not evidence:
+        elif evidence_strength == "weak":
+            status_value = "weak_evidence"
+        elif not evidence_references:
             status_value = "missing_architecture"
         else:
-            status_value = "covered"
+            status_value = "missing_architecture"
         rows.append(
-            "| {req_id} | {text} | {scenarios} | {evidence} | {status} |".format(
+            "| {req_id} | {text} | {scenarios} | {evidence} | {strength} | {status} |".format(
                 req_id=req_id,
                 text=requirement["text"].replace("|", "\\|"),
                 scenarios=", ".join(scenarios) if scenarios else "none",
-                evidence=", ".join(evidence) if evidence else "none",
+                evidence=", ".join(evidence_references).replace("|", "\\|") if evidence_references else "none",
+                strength=evidence_strength,
                 status=status_value,
             )
         )
@@ -302,8 +506,8 @@ def build_traceability_text(artifacts: ArtifactSet) -> str:
             "",
             "> Generated by Leaf Gate prepare evidence from the current node PRD, testcase, and architecture package.",
             "",
-            "| Requirement | Requirement text | Testcase scenarios | Architecture evidence | Status |",
-            "| --- | --- | --- | --- | --- |",
+            "| Requirement | Requirement text | Testcase scenarios | Architecture evidence | Evidence strength | Status |",
+            "| --- | --- | --- | --- | --- | --- |",
             *rows,
             "",
         ]
@@ -320,6 +524,22 @@ def parse_traceability_inactive_requirements(traceability_text: str) -> set[str]
             continue
         inactive.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
     return inactive
+
+
+def parse_traceability_coverage_gaps(traceability_text: str) -> List[str]:
+    gaps = []
+    failing_statuses = {"missing_testcase", "missing_architecture", "weak_evidence"}
+    for line in traceability_text.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 6 or cells[0] in {"Requirement", "---"}:
+            continue
+        req_id = cells[0]
+        status_value = cells[-1]
+        if status_value in failing_statuses:
+            gaps.append(f"{req_id}: {status_value}")
+    return gaps
 
 
 def extract_validation_risk_rows(architecture_files: Iterable[Path], node_dir: Path) -> List[Dict[str, str]]:
@@ -371,14 +591,18 @@ def build_risks_text(artifacts: ArtifactSet) -> str:
         )
 
     for line in traceability_text.splitlines():
-        if not line.lstrip().startswith("|") or "missing_" not in line:
+        if not line.lstrip().startswith("|") or not re.search(r"missing_|weak_evidence", line):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 5:
+        if len(cells) < 6:
+            continue
+        status_value = cells[-1]
+        if status_value not in {"missing_testcase", "missing_architecture", "weak_evidence"}:
             continue
         rows.append(
-            "| Coverage gap for {req_id} | Automatic verification may be incomplete | high | open | Add missing testcase or architecture evidence before Leaf Gate can pass | traceability.md |".format(
-                req_id=cells[0]
+            "| Coverage gap for {req_id} | Automatic verification may be incomplete ({status}) | high | open | Add strong or medium architecture/testcase evidence before Leaf Gate can pass | traceability.md |".format(
+                req_id=cells[0],
+                status=status_value,
             )
         )
 
@@ -517,6 +741,7 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
 
     covered = set(feature["covered_requirements"])
     inactive_requirements = parse_traceability_inactive_requirements(traceability_text)
+    architecture_evidence_gaps = parse_traceability_coverage_gaps(traceability_text)
     requirement_set = set(requirements) - inactive_requirements
     unmapped_requirements = sorted(requirement_set - covered)
     c4_failures = []
@@ -528,6 +753,8 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
         c4_failures.append("requirements without scenario tags")
     if feature["untagged_scenarios"]:
         c4_failures.append("scenarios without REQ/NFR tags")
+    if architecture_evidence_gaps:
+        c4_failures.append("requirements without usable architecture evidence")
 
     c5_failures = []
     if not artifacts.risks:
@@ -578,6 +805,7 @@ def static_checks(artifacts: ArtifactSet, thresholds: Dict[str, Any]) -> Dict[st
             {
                 "unmapped_requirements": unmapped_requirements,
                 "deferred_or_excluded_requirements": sorted(inactive_requirements),
+                "architecture_evidence_gaps": architecture_evidence_gaps,
                 "untagged_scenarios": feature["untagged_scenarios"],
                 "covered_requirements": feature["covered_requirements"],
             },
@@ -609,6 +837,8 @@ def static_decision(report: Dict[str, Any]) -> Tuple[str, str]:
         return "NEEDS_SPEC_REFINEMENT", f"Missing required artifacts: {', '.join(missing)}."
     failed = [criterion for criterion in CRITERIA if report[criterion]["status"] == "fail"]
     if failed:
+        if "C1_behavior_complexity" not in failed:
+            return "NEEDS_SPEC_REFINEMENT", f"Static checks failed: {', '.join(failed)}."
         return "NEEDS_DECOMPOSITION", f"Static checks failed: {', '.join(failed)}."
     return "STATIC_PASS_REQUIRES_LLM", "Static checks passed. Run LLM semantic judgement before LEAF_READY."
 
@@ -649,6 +879,8 @@ def combine_with_llm(static_report: Dict[str, Any], llm_path: Path, thresholds: 
     if static_report["artifacts"]["missing"]:
         return "NEEDS_SPEC_REFINEMENT", "Required artifacts are missing.", llm_report
     if static_failed:
+        if "C1_behavior_complexity" not in static_failed:
+            return "NEEDS_SPEC_REFINEMENT", f"Static checks failed: {', '.join(static_failed)}.", llm_report
         return "NEEDS_DECOMPOSITION", f"Static checks failed: {', '.join(static_failed)}.", llm_report
     if failed:
         return "NEEDS_DECOMPOSITION", f"LLM judgement failed: {', '.join(failed)}.", llm_report
