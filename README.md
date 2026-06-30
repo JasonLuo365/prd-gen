@@ -1,0 +1,174 @@
+# PRD Gen
+
+PRD Gen 是一个面向分层开发流程的 PRD 生成与评审工具集。它主要覆盖两件事：
+
+- 从产品想法生成顶层 PRD，并通过质量门控补齐可测试边界。
+- 基于上层 PRD 和架构包派生下层 PRD，并用 Leaf Gate 判断当前节点是否可以停止拆分进入实现。
+
+当前仓库仍处于迭代阶段，重点是沉淀 PRD 生成 skill、Derive 后端、Leaf Gate 规则和相关测试。
+
+## Repository Layout
+
+```text
+prd_flow/                         # PRD 生成 CLI 和 Derive 后端
+skills/prd-generation/            # 可复用的 PRD Generation skill 包
+leaf-gate-skill/leaf-gate/        # Leaf Gate skill 包
+tests/                            # 单元测试和静态 skill 检查
+docs/superpowers/specs/           # 流程和 skill 设计文档
+outputs/                          # 本地生成物目录，已被 gitignore 忽略
+```
+
+## PRD Generation
+
+PRD Generation 分为两种模式。
+
+### Root Mode
+
+Root 模式用于从零生成顶层 PRD。它通过对话收集产品目标、用户、痛点、需求、验收场景和成功指标。
+
+当前 Root 模式的交互策略是选择题优先：
+
+- 每次只问一个决策问题。
+- 默认提供几个方向选项。
+- 用户可以选择 `Other / supplement` 自由补充或覆盖选项。
+- 最终 PRD 必须通过 testcase readiness review，避免把模糊边界留给 testcase 阶段。
+
+### Derive Mode
+
+Derive 模式用于根据上层 PRD 和架构包生成下层 PRD。
+
+推荐命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m prd_flow `
+  --parent-prd <parent_prd.md> `
+  --architecture-package <architecture_dir_or_readme_or_zip> `
+  --target-module "<module_or_bounded_context>" `
+  --target-granularity auto `
+  --output <output_prd.md>
+```
+
+`--architecture-package` 支持：
+
+- 架构目录
+- 架构目录中的 `README.md`
+- `.zip` 架构包
+- 旧版单文件 `--parent-architecture` 仍保留兼容
+
+推荐架构包结构：
+
+```text
+architecture/
+  README.md
+  01-system-overview.md
+  02-module-partitioning.md
+  03-runtime-architecture.md
+  04-adr-summary.md
+  05-data-model.md
+  06-interface-contracts.md
+  07-technology-choices.md
+  08-deployment.md
+```
+
+`--target-granularity` 可选：
+
+- `auto`
+- `deployable_module`
+- `bounded_context`
+
+## Leaf Gate
+
+Leaf Gate 用于判断一个分层节点是否已经足够清晰，可以停止继续拆分并进入实现。
+
+标准输入是一个节点目录：
+
+```text
+node-id/
+  prd.md
+  testcase.feature
+  architecture.yaml|json|md
+  traceability.yaml|json|md
+  risks.yaml|json|md
+```
+
+静态检查命令：
+
+```powershell
+.\.venv\Scripts\python.exe leaf-gate-skill\leaf-gate\scripts\run_leaf_gate.py `
+  <node-dir> `
+  --output <node-dir>\leaf-gate.static.json
+```
+
+Leaf Gate 不会只靠静态检查返回 `LEAF_READY`。静态检查之后还需要结合 LLM 语义评审，对五个标准给出证据：
+
+- C1 behavior complexity is controlled
+- C2 contract boundary is clear
+- C3 AI implementation context is controlled
+- C4 automatic verification is decidable
+- C5 residual risk is low and decomposition gain is low
+
+最终决策只允许：
+
+- `LEAF_READY`
+- `NEEDS_DECOMPOSITION`
+- `NEEDS_SPEC_REFINEMENT`
+- `HUMAN_REVIEW`
+
+## Local Outputs
+
+真实产品 PRD、testcase、architecture、Leaf Gate 报告等生成物建议放在 `outputs/` 下。
+
+示例：
+
+```text
+outputs/high-school-math-tutor/
+  L0-root/
+    prd.md
+    testcase.feature
+    architecture/
+    traceability.md
+    risks.md
+    leaf-gate.report.json
+  L1-answer-flow/
+    prd.md
+```
+
+`outputs/` 已被 `.gitignore` 忽略，不会默认提交到 GitHub。这样可以在本地生成和修改产品文档，同时只把流程代码、skill 和测试推到仓库。
+
+## Development
+
+创建或使用本地虚拟环境后安装依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .[dev]
+```
+
+运行重点测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\test_derive `
+  tests\test_main_derive.py `
+  tests\test_mode_detector.py `
+  tests\test_architecture_package_parser.py `
+  tests\test_prd_generation_skill.py
+```
+
+运行 Python 编译检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall prd_flow skills\prd-generation\scripts\prd_flow tests
+```
+
+## Git Notes
+
+常用提交流程：
+
+```powershell
+git status
+git add -A
+git commit -m "describe the change"
+git push
+```
+
+提交前建议确认 `git status` 里没有出现不想上传的产品生成物。如果生成物放在 `outputs/` 下，默认不会进入 Git。
