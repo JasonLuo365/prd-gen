@@ -158,6 +158,73 @@ def test_architecture_evidence_strength_covers_without_req_id(tmp_path: Path) ->
     assert c4_evidence["architecture_evidence_gaps"] == []
 
 
+def test_derive_requirements_use_current_ids_and_preserve_parent_trace(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-tutoring-session"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text(
+        """# Requirements
+
+## Must Have
+
+- [REQ-D001] Tutoring Session Module 应在自身职责边界内满足父需求：系统应要求学生在开始答疑前选择基础水平，基础水平枚举为：薄弱 / 中等 / 较好。
+  - parent_req: REQ-004
+
+## Non-functional Requirements
+
+- [NFR-D001] Tutoring Session Module 应在模块边界内继承父级非功能约束：答疑结果必须在会话内可追溯到对应题目图片和基础水平选择。
+  - parent_req: NFR-004
+""",
+        encoding="utf-8",
+    )
+    (node_dir / "testcase.feature").write_text(
+        """Feature: Tutoring Session
+
+  @REQ-D001 @TC-D001
+  Scenario: Student starts tutoring after selecting foundation level
+    Given 学生已选择基础水平为薄弱
+    When 学生开始答疑
+    Then 系统创建 TutoringSession 并记录基础水平
+
+  @NFR-D001 @TC-NFR-D001
+  Scenario: Tutoring result is traceable to problem image and foundation level
+    Given 已存在包含图片 ID 和基础水平的 TutoringSession
+    When 查询答疑结果
+    Then 结果关联到对应题目图片和基础水平选择
+""",
+        encoding="utf-8",
+    )
+    output_dir = node_dir / "architecture" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "06-interface-contracts.md").write_text(
+        """# 06 - Interface Contracts
+
+### Start Tutoring Session
+
+- **输入**：imageId、proficiencyLevel（薄弱 / 中等 / 较好）。
+- **输出**：sessionId、status、selectedProficiencyLevel。
+- **错误码**：400 表示未选择基础水平。
+- **状态**：created -> active。
+- **副作用**：写入 TutoringSession，并记录图片 ID 与基础水平关联。
+- **依赖**：Problem Intake 提供已校验图片引用。
+""",
+        encoding="utf-8",
+    )
+
+    report = leaf_gate.build_report(node_dir, None)
+    traceability_text = (node_dir / "traceability.md").read_text(encoding="utf-8")
+    c4_evidence = report["static_checks"]["C4_verifiability"]["evidence"]
+
+    assert report["static_checks"]["requirements"]["ids"] == ["NFR-D001", "REQ-D001"]
+    assert "REQ-004" not in report["static_checks"]["requirements"]["ids"]
+    assert "NFR-004" not in report["static_checks"]["requirements"]["ids"]
+    assert "parent_req: REQ-004" in traceability_text
+    assert "| REQ-D001 |" in traceability_text
+    assert "| NFR-D001 |" in traceability_text
+    assert c4_evidence["unmapped_requirements"] == []
+    assert c4_evidence["architecture_evidence_gaps"] == []
+
+
 def test_weak_architecture_evidence_fails_without_human_review(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L0-root"

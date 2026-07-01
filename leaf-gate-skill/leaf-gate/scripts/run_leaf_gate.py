@@ -35,6 +35,9 @@ CRITERIA = [
     "C5_risk_decomposition",
 ]
 
+CURRENT_REQ_ID_RE = r"(?:REQ|NFR)-(?:[A-Z]+)?\d{3,}"
+TRACE_TAG_ID_RE = r"(?:REQ|NFR|MET)-(?:[A-Z]+)?\d{3,}"
+
 
 @dataclass
 class ArtifactSet:
@@ -136,21 +139,31 @@ def status(level: str, reason: str, evidence: Optional[Dict[str, Any]] = None) -
 
 
 def count_requirements(prd_text: str) -> List[str]:
-    return sorted(set(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", prd_text)))
+    return [requirement["id"] for requirement in extract_requirements(prd_text)]
 
 
 def extract_requirements(prd_text: str) -> List[Dict[str, str]]:
     requirements: Dict[str, Dict[str, str]] = {}
     section = ""
-    for line in prd_text.splitlines():
+    lines = prd_text.splitlines()
+    for index, line in enumerate(lines):
         heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
         if heading:
             section = heading.group(1)
-        for req_id in re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line):
-            clean = re.sub(r"^\s*[-*]\s*", "", line).strip()
-            clean = re.sub(rf"^\[?{re.escape(req_id)}\]?\s*", "", clean).strip()
-            clean = clean or line.strip()
-            requirements.setdefault(req_id, {"id": req_id, "text": clean, "section": section})
+            continue
+
+        req_match = re.match(rf"^\s*[-*]\s+\[({CURRENT_REQ_ID_RE})\]\s*(.+?)\s*$", line)
+        if not req_match:
+            continue
+
+        req_id = req_match.group(1)
+        clean = req_match.group(2).strip() or line.strip()
+        item = {"id": req_id, "text": clean, "section": section}
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        parent_match = re.match(rf"^\s*[-*]\s+parent_req:\s*({CURRENT_REQ_ID_RE})\s*$", next_line)
+        if parent_match:
+            item["parent_req"] = parent_match.group(1)
+        requirements.setdefault(req_id, item)
     return [requirements[req_id] for req_id in sorted(requirements)]
 
 
@@ -185,8 +198,8 @@ def parse_feature(feature_text: str) -> Dict[str, Any]:
         prefix_start = max(0, feature_text.rfind("\n\n", 0, start))
         prefix = feature_text[prefix_start:start]
         tags = tag_re.findall(prefix)
-        req_tags = sorted(set(tag[1:] for tag in tags if re.match(r"@(?:REQ|NFR)-\d{3,}", tag)))
-        trace_tags = sorted(set(tag[1:] for tag in tags if re.match(r"@(?:REQ|NFR|MET)-\d{3,}", tag)))
+        req_tags = sorted(set(tag[1:] for tag in tags if re.match(rf"@{CURRENT_REQ_ID_RE}$", tag)))
+        trace_tags = sorted(set(tag[1:] for tag in tags if re.match(rf"@{TRACE_TAG_ID_RE}$", tag)))
         steps = step_re.findall(block)
         example_rows = 0
         if "Scenario Outline" in match.group(0):
@@ -236,7 +249,7 @@ def detect_deferred_requirements(prd_text: str, feature_text: str) -> set[str]:
     deferred: set[str] = set()
     for line in feature_text.splitlines():
         if re.search(r"deferred|延期|未进入|缺少确定|未冻结|不生成", line, flags=re.IGNORECASE):
-            deferred.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+            deferred.update(re.findall(rf"\b{CURRENT_REQ_ID_RE}\b", line))
 
     in_could_have = False
     for line in prd_text.splitlines():
@@ -246,7 +259,7 @@ def detect_deferred_requirements(prd_text: str, feature_text: str) -> set[str]:
             in_could_have = "could have" in title
             continue
         if in_could_have:
-            deferred.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+            deferred.update(re.findall(rf"\b{CURRENT_REQ_ID_RE}\b", line))
     return deferred
 
 
@@ -467,6 +480,9 @@ def build_traceability_text(artifacts: ArtifactSet) -> str:
     rows = []
     for requirement in extract_requirements(prd_text):
         req_id = requirement["id"]
+        requirement_text = requirement["text"]
+        if requirement.get("parent_req"):
+            requirement_text = f"{requirement_text}<br>parent_req: {requirement['parent_req']}"
         scenarios = scenarios_by_req.get(req_id, [])
         evidence = architecture_evidence(
             req_id,
@@ -492,7 +508,7 @@ def build_traceability_text(artifacts: ArtifactSet) -> str:
         rows.append(
             "| {req_id} | {text} | {scenarios} | {evidence} | {strength} | {status} |".format(
                 req_id=req_id,
-                text=requirement["text"].replace("|", "\\|"),
+                text=requirement_text.replace("|", "\\|"),
                 scenarios=", ".join(scenarios) if scenarios else "none",
                 evidence=", ".join(evidence_references).replace("|", "\\|") if evidence_references else "none",
                 strength=evidence_strength,
@@ -522,7 +538,7 @@ def parse_traceability_inactive_requirements(traceability_text: str) -> set[str]
         lowered = line.lower()
         if "deferred" not in lowered and "excluded" not in lowered and "not_applicable" not in lowered:
             continue
-        inactive.update(re.findall(r"\b(?:REQ|NFR)-\d{3,}\b", line))
+        inactive.update(re.findall(rf"\b{CURRENT_REQ_ID_RE}\b", line))
     return inactive
 
 

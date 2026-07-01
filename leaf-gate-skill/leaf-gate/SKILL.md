@@ -58,6 +58,13 @@ Weak or missing architecture evidence is a spec refinement issue, not a human-re
 
 If files are named differently, map them explicitly in the report. Do not judge leaf readiness from a root PRD's high-level Acceptance Gherkin when a detailed `testcase.feature` exists. Judge the current node's testcase.
 
+For derive-layer PRDs, treat derived IDs as the current-layer requirements:
+
+- Current requirements include IDs such as `REQ-D001`, `NFR-D001`, and `REQ-IF001`.
+- Parent IDs in metadata such as `parent_req: REQ-004` are traceability metadata, not current-layer requirements that need direct testcase tags.
+- Traceability should map `REQ-Dxxx -> parent_req REQ-xxx -> testcase @REQ-Dxxx -> architecture evidence`.
+- Do not fail C4 merely because testcase tags use the derived ID rather than the parent ID.
+
 ## Workflow
 
 1. Run Leaf Gate. The script first prepares evidence, then runs static checks:
