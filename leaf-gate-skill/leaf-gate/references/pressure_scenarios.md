@@ -12,7 +12,7 @@ Expected: The agent must not mark `LEAF_READY` from scenario count. It should fa
 
 Input: PRD and feature are present, but architecture only lists component names.
 
-Expected: The agent must return `NEEDS_SPEC_REFINEMENT` or fail C2. It must not invent contracts.
+Expected: The agent must return `NEEDS_REFINEMENT` with an `architecture` route or fail C2. It must not invent contracts.
 
 ## Scenario 3: Vague Then Clauses
 
@@ -24,4 +24,4 @@ Expected: The agent must fail or warn C4 and request refinement.
 
 Input: Authorization and destructive operations remain in one node, with unresolved policy questions.
 
-Expected: The agent must not return `LEAF_READY`; choose `NEEDS_DECOMPOSITION` or `HUMAN_REVIEW`.
+Expected: The agent must not return `LEAF_READY`; choose `NEEDS_DECOMPOSITION` or `NEEDS_REFINEMENT` with an `owner_decision` route.

@@ -54,7 +54,7 @@ Generated traceability uses deterministic evidence strength:
 | `weak` | Only broad or partial terms match. | Fails C4 as `weak_evidence`; do not send to human review. |
 | `none` | No usable architecture evidence. | Fails C4 as `missing_architecture`. |
 
-Weak or missing architecture evidence is a spec refinement issue, not a human-review shortcut. The static decision should be `NEEDS_SPEC_REFINEMENT` unless behavior complexity also fails, in which case `NEEDS_DECOMPOSITION` takes priority.
+Weak or missing architecture evidence is a refinement issue, not a decomposition shortcut. The static decision should be `NEEDS_REFINEMENT` unless behavior complexity also fails, in which case `NEEDS_DECOMPOSITION` takes priority.
 
 If files are named differently, map them explicitly in the report. Do not judge leaf readiness from a root PRD's high-level Acceptance Gherkin when a detailed `testcase.feature` exists. Judge the current node's testcase.
 
@@ -73,7 +73,9 @@ For derive-layer PRDs, treat derived IDs as the current-layer requirements:
 python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.json
 ```
 
-2. Confirm the generated `traceability.md` and `risks.md` reflect the current node scope. If they show missing testcase coverage, missing architecture evidence, or open high risk, do not override that gap in the LLM judgement.
+When `--output` is provided, the script also writes `<output-dir>/leaf-gate.refinement.md` as an index. Detailed human-readable handoffs are split by target: `leaf-gate.refinement.architecture.md`, `leaf-gate.refinement.testcase.md`, and `leaf-gate.refinement.owner_decision.md` when those targets exist.
+
+2. Confirm the generated `traceability.md`, `risks.md`, `leaf-gate.refinement.md`, and target-specific refinement files reflect the current node scope. If they show missing testcase coverage, missing architecture evidence, or open high risk, do not override that gap in the LLM judgement.
 3. Read `references/leaf_gate_rubric.md`.
 4. Read `references/llm_judge_prompt.md` and judge the five criteria against the PRD, feature file, architecture, traceability, risks, and static report.
 5. Produce a final `leaf-gate.report.json` using `references/report_template.json`.
@@ -83,19 +85,28 @@ python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.
 | --- | --- |
 | `LEAF_READY` | The node may enter vibecoding. |
 | `NEEDS_DECOMPOSITION` | Generate lower-layer PRDs. |
-| `NEEDS_SPEC_REFINEMENT` | Required artifacts, contracts, tests, or mappings are missing or ambiguous. |
-| `HUMAN_REVIEW` | High risk, low confidence, or policy-sensitive scope needs human judgement. |
+| `NEEDS_REFINEMENT` | Do not decompose yet; route artifact or owner-decision fixes through `refinement_routes`. |
+
+When the decision is `NEEDS_REFINEMENT`, include `refinement_routes`:
+
+| Target | Meaning |
+| --- | --- |
+| `architecture` | Architecture contract, dependency, side-effect, or architecture-evidence fix. |
+| `testcase` | Testcase coverage, scenario tag, observable assertion, or test mapping fix. |
+| `owner_decision` | Product, business, compliance, or risk decision that generation must not invent. |
+
+For human handoff, share only the target-specific Markdown file with each owner instead of asking upstream owners to read JSON or a combined report.
 
 ## Hard Rules
 
 - Do not return `LEAF_READY` from static checks alone.
 - Do not return `LEAF_READY` unless all five criteria pass.
 - Every LLM PASS or FAIL must cite evidence from an artifact or the static report.
-- If evidence is missing, choose `NEEDS_SPEC_REFINEMENT`, not PASS.
-- If unresolved high risk remains, choose `HUMAN_REVIEW` or `NEEDS_DECOMPOSITION`.
+- If evidence is missing, choose `NEEDS_REFINEMENT`, not PASS.
+- If unresolved high risk remains, choose `NEEDS_REFINEMENT` with an `owner_decision`, `architecture`, or `testcase` route, or choose `NEEDS_DECOMPOSITION` when C1/C2 show the node is too broad.
 - If a scenario is a system-level story hiding multiple subsystems, fail behavior complexity even if the scenario count is low.
 - Do not treat generated `traceability.md` or `risks.md` as proof by themselves. They are evidence indexes; judge the underlying PRD, testcase, architecture, and validation report.
-- Do not upgrade `weak_evidence` during semantic judgement. Weak evidence remains a static C4 failure and should lead to spec refinement or decomposition, not `HUMAN_REVIEW`.
+- Do not upgrade `weak_evidence` during semantic judgement. Weak evidence remains a static C4 failure and should lead to `NEEDS_REFINEMENT` with an `architecture` route or to decomposition if behavior complexity also fails.
 
 ## Five Criteria
 
@@ -116,7 +127,7 @@ Use the rubric file for full details. In brief:
 | Counting only root PRD Acceptance scenarios | Use the current node's detailed `testcase.feature`. |
 | Treating low scenario count as leaf readiness | Check hidden domains and scenario breadth. |
 | Letting the LLM decide without static checks | Run the checker first and cite its output. |
-| Treating missing risk files as no risk | Mark the node as `NEEDS_SPEC_REFINEMENT`. |
+| Treating missing risk files as no risk | Mark the node as `NEEDS_REFINEMENT`. |
 | Feeding an entire architecture working directory | Prefer `architecture/output` plus `architecture/validation-report.md`; avoid intermediate drafts unless cited by the final package. |
 | Treating generated evidence as self-certifying | Use traceability and risks as indexes back to source artifacts. |
 | Treating weak keyword overlap as coverage | Require `strong` or `medium`; weak evidence fails C4. |

@@ -119,7 +119,7 @@ node-id/
 - `weak`：只有泛关键词或部分词命中，不算覆盖。
 - `none`：没有可用架构证据，不算覆盖。
 
-`weak` 和 `none` 会让 C4 失败，并返回 `NEEDS_SPEC_REFINEMENT`，不会自动进入人工复核。
+`weak` 和 `none` 会让 C4 失败，并返回 `NEEDS_REFINEMENT`，同时通过 `refinement_routes` 指向需要修正的上游产物。
 
 静态检查命令：
 
@@ -128,6 +128,8 @@ node-id/
   <node-dir> `
   --output <node-dir>\leaf-gate.static.json
 ```
+
+使用 `--output` 时，Leaf Gate 会同时在同目录生成 `leaf-gate.refinement.md` 索引文件。详细修改建议会按责任方拆成 `leaf-gate.refinement.architecture.md`、`leaf-gate.refinement.testcase.md`、`leaf-gate.refinement.owner_decision.md`，只在对应责任方存在时生成。JSON 面向自动化读取，Markdown 面向架构、testcase 和人工决策责任方阅读。
 
 Leaf Gate 不会只靠静态检查返回 `LEAF_READY`。静态检查之后还需要结合 LLM 语义评审，对五个标准给出证据：
 
@@ -141,8 +143,13 @@ Leaf Gate 不会只靠静态检查返回 `LEAF_READY`。静态检查之后还需
 
 - `LEAF_READY`
 - `NEEDS_DECOMPOSITION`
-- `NEEDS_SPEC_REFINEMENT`
-- `HUMAN_REVIEW`
+- `NEEDS_REFINEMENT`
+
+`NEEDS_REFINEMENT` 会携带 `refinement_routes`，把修正反馈分给：
+
+- `architecture`
+- `testcase`
+- `owner_decision`
 
 ## Local Outputs
 
@@ -161,6 +168,9 @@ outputs/high-school-math-tutor/
     traceability.md      # Leaf Gate prepare evidence 生成
     risks.md             # Leaf Gate prepare evidence 生成
     leaf-gate.report.json
+    leaf-gate.refinement.md              # 修改建议索引
+    leaf-gate.refinement.architecture.md # 架构修正建议，仅在需要时生成
+    leaf-gate.refinement.testcase.md     # testcase 修正建议，仅在需要时生成
   L1-answer-flow/
     prd.md
 ```

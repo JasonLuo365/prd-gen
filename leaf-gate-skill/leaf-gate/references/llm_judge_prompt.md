@@ -21,7 +21,7 @@ Rules:
 - Every PASS, WARN, or FAIL must cite evidence from an artifact or the static report.
 - Treat generated traceability and risk artifacts as indexes back to source artifacts, not as self-certifying proof.
 - Do not override static `weak_evidence` or `missing_architecture` rows as pass. They are deterministic C4 failures.
-- Do not route weak evidence to human review. Recommend `NEEDS_SPEC_REFINEMENT` unless behavior complexity also requires decomposition.
+- Do not route weak evidence to owner decision. Recommend `NEEDS_REFINEMENT` with an `architecture` route unless behavior complexity also requires decomposition.
 - If evidence is missing, mark the criterion fail or warn.
 - If a scenario hides multiple subsystems, fail behavior complexity.
 - If high-risk unresolved items remain, do not return LEAF_READY.
@@ -62,10 +62,19 @@ Return strict JSON only:
       "reason": "<short reason>"
     }
   },
-  "recommended_decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_SPEC_REFINEMENT|HUMAN_REVIEW",
+  "recommended_decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_REFINEMENT",
   "summary": "<one paragraph>",
+  "refinement_routes": [
+    {
+      "target": "architecture|testcase|owner_decision",
+      "criterion": "<criterion id>",
+      "reason": "<why this target owns the fix>",
+      "actions": ["<specific correction>"],
+      "evidence": ["<artifact-backed evidence>"]
+    }
+  ],
   "suggested_next_action": {
-    "type": "decompose|refine_spec|human_review|vibecode",
+    "type": "decompose|refine_spec|vibecode",
     "children": ["<optional child node names>"],
     "notes": ["<optional notes>"]
   }

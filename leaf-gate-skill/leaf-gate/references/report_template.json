@@ -1,6 +1,6 @@
 {
   "node_id": "",
-  "decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_SPEC_REFINEMENT|HUMAN_REVIEW",
+  "decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_REFINEMENT",
   "summary": "",
   "static_checks": {
     "C1_behavior_complexity": {},
@@ -41,8 +41,17 @@
       "reason": ""
     }
   },
+  "refinement_routes": [
+    {
+      "target": "architecture|testcase|owner_decision",
+      "criterion": "C1_behavior_complexity|C2_contract_boundary|C3_ai_context_control|C4_verifiability|C5_risk_decomposition|artifacts",
+      "reason": "",
+      "actions": [],
+      "evidence": []
+    }
+  ],
   "next_action": {
-    "type": "decompose|refine_spec|human_review|vibecode",
+    "type": "decompose|refine_spec|vibecode",
     "children": [],
     "notes": []
   }

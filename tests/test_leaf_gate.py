@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -94,6 +95,44 @@ ProblemImage 状态包含 uploaded、validating、valid、invalid。
 | 风险 | 影响 | 缓解措施 |
 | --- | --- | --- |
 | 对象存储上传失败 | 图片上传 | 允许重新上传并记录审计 |
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_mixed_feedback_node(node_dir: Path) -> None:
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text(
+        """# Requirements
+
+- [REQ-D001] Problem Intake Module supports JPG/PNG image upload.
+- [REQ-D002] Problem Intake Module rejects more than 3 images.
+""",
+        encoding="utf-8",
+    )
+    (node_dir / "testcase.feature").write_text(
+        """Feature: Problem Intake
+
+  @REQ-D001 @TC-D001
+  Scenario: Upload JPG or PNG image
+    Given the student is signed in
+    When the student uploads a JPG image
+    Then the system accepts the image
+""",
+        encoding="utf-8",
+    )
+    output_dir = node_dir / "architecture" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "06-interface-contracts.md").write_text(
+        """# Interface Contracts
+
+### Upload Image
+
+- **inputs**: 1 to 3 JPG/PNG images.
+- **outputs**: imageId, status.
+- **errors**: 400 for invalid image format.
+- **state**: uploaded -> validated.
+- **dependencies**: Object Storage.
 """,
         encoding="utf-8",
     )
@@ -225,7 +264,7 @@ def test_derive_requirements_use_current_ids_and_preserve_parent_trace(tmp_path:
     assert c4_evidence["architecture_evidence_gaps"] == []
 
 
-def test_weak_architecture_evidence_fails_without_human_review(tmp_path: Path) -> None:
+def test_weak_architecture_evidence_routes_to_architecture_refinement(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L0-root"
     node_dir.mkdir()
@@ -264,4 +303,116 @@ def test_weak_architecture_evidence_fails_without_human_review(tmp_path: Path) -
     assert "| weak | weak_evidence |" in traceability_text
     assert c4["status"] == "fail"
     assert c4["evidence"]["architecture_evidence_gaps"] == ["REQ-001: weak_evidence"]
-    assert report["decision"] == "NEEDS_SPEC_REFINEMENT"
+    assert report["decision"] == "NEEDS_REFINEMENT"
+    routes = report["refinement_routes"]
+    assert any(route["target"] == "architecture" for route in routes)
+
+
+def test_refinement_routes_split_architecture_and_testcase_feedback(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-mixed-feedback"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text(
+        """# Requirements
+
+- [REQ-D001] Problem Intake Module 应支持学生上传 JPG/PNG 图片。
+- [REQ-D002] Problem Intake Module 应拒绝超过 3 张图片。
+""",
+        encoding="utf-8",
+    )
+    (node_dir / "testcase.feature").write_text(
+        """Feature: Problem Intake
+
+  @REQ-D001 @TC-D001
+  Scenario: Upload JPG or PNG image
+    Given 学生已登录
+    When 学生上传 JPG 图片
+    Then 系统接受图片
+""",
+        encoding="utf-8",
+    )
+    output_dir = node_dir / "architecture" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "06-interface-contracts.md").write_text(
+        """# Interface Contracts
+
+### Upload Image
+
+- **输入**：1 到 3 张 JPG/PNG 图片。
+- **输出**：imageId、status。
+- **错误码**：400 表示格式非法。
+- **状态**：uploaded -> validated。
+- **依赖**：Object Storage。
+""",
+        encoding="utf-8",
+    )
+
+    report = leaf_gate.build_report(node_dir, None)
+    routes = report["refinement_routes"]
+
+    assert report["decision"] == "NEEDS_REFINEMENT"
+    architecture_routes = [route for route in routes if route["target"] == "architecture"]
+    testcase_routes = [route for route in routes if route["target"] == "testcase"]
+    assert architecture_routes
+    assert testcase_routes
+    assert any("side_effects" in action for route in architecture_routes for action in route["actions"])
+    assert any("REQ-D002" in action for route in testcase_routes for action in route["actions"])
+
+
+def test_target_refinement_markdown_only_contains_target_routes(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-mixed-feedback"
+    _write_mixed_feedback_node(node_dir)
+
+    report = leaf_gate.build_report(node_dir, None)
+    architecture_markdown = leaf_gate.render_refinement_markdown(report, target="architecture")
+    testcase_markdown = leaf_gate.render_refinement_markdown(report, target="testcase")
+
+    assert "# Leaf Gate Refinement Suggestions: architecture" in architecture_markdown
+    assert "architecture/output/06-interface-contracts.md" in architecture_markdown
+    assert "side_effects" in architecture_markdown
+    assert "testcase.feature" not in architecture_markdown
+    assert "REQ-D002" not in architecture_markdown
+
+    assert "# Leaf Gate Refinement Suggestions: testcase" in testcase_markdown
+    assert "testcase.feature" in testcase_markdown
+    assert "REQ-D002" in testcase_markdown
+    assert "architecture/output/06-interface-contracts.md" not in testcase_markdown
+    assert "side_effects" not in testcase_markdown
+
+
+def test_main_writes_split_refinement_markdown_next_to_json_output(tmp_path: Path, monkeypatch) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-mixed-feedback"
+    _write_mixed_feedback_node(node_dir)
+    output = node_dir / "leaf-gate.report.json"
+
+    monkeypatch.setattr(sys, "argv", ["run_leaf_gate.py", str(node_dir), "--output", str(output)])
+
+    assert leaf_gate.main() == 0
+    assert output.exists()
+    assert json.loads(output.read_text(encoding="utf-8"))["decision"] == "NEEDS_REFINEMENT"
+    index = node_dir / "leaf-gate.refinement.md"
+    architecture = node_dir / "leaf-gate.refinement.architecture.md"
+    testcase = node_dir / "leaf-gate.refinement.testcase.md"
+    assert index.exists()
+    assert architecture.exists()
+    assert testcase.exists()
+
+    index_text = index.read_text(encoding="utf-8")
+    assert "leaf-gate.refinement.architecture.md" in index_text
+    assert "leaf-gate.refinement.testcase.md" in index_text
+    assert "side_effects" not in index_text
+    assert "REQ-D002" not in index_text
+
+    architecture_text = architecture.read_text(encoding="utf-8")
+    assert "architecture/output/06-interface-contracts.md" in architecture_text
+    assert "side_effects" in architecture_text
+    assert "testcase.feature" not in architecture_text
+    assert "REQ-D002" not in architecture_text
+
+    testcase_text = testcase.read_text(encoding="utf-8")
+    assert "testcase.feature" in testcase_text
+    assert "REQ-D002" in testcase_text
+    assert "architecture/output/06-interface-contracts.md" not in testcase_text
+    assert "side_effects" not in testcase_text

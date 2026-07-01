@@ -169,5 +169,10 @@ Return `LEAF_READY` only when:
 Otherwise:
 
 - `NEEDS_DECOMPOSITION` when behavior or boundaries are too large,
-- `NEEDS_SPEC_REFINEMENT` when required artifacts or definitions are missing,
-- `HUMAN_REVIEW` when risk is high or model confidence is low.
+- `NEEDS_REFINEMENT` when required artifacts, definitions, contracts, testcase mapping, architecture evidence, owner decisions, or risk dispositions are missing.
+
+For `NEEDS_REFINEMENT`, include `refinement_routes` with one or more targets:
+
+- `architecture`: contract fields, dependencies, side effects, architecture evidence, risk mitigations that belong in architecture.
+- `testcase`: missing scenario coverage, missing tags, unobservable Then clauses, metric/test probes.
+- `owner_decision`: product, business, compliance, risk-acceptance, or low-confidence semantic decisions that generation must not invent.
