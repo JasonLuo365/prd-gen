@@ -101,10 +101,10 @@ def test_run_derive_mode_success(
     assert mock_build_context.call_args.args[1] == Path("arch.yaml")
     assert mock_build_context.call_args.kwargs["target_granularity"] == "auto"
     assert state.draft_content["P1"]["doc_id"] == "PARENT-PRD-v1.0-PAYMENT-GATEWAY-v1.0"
-    assert state.draft_content["P2"]["target_users"] == "系统用户"
-    assert state.draft_content["P3"]["functional"][0]["id"] == "REQ-001-1"
-    assert state.draft_content["P4"]["scenarios"][0]["scenario"] == "process_payment 正常调用"
-    assert state.draft_content["P5"]["metrics"][0]["name"] == "接口响应时间"
+    assert state.draft_content["P2"]["target_users"] == "该模块的上游调用方和受其行为影响的系统用户"
+    assert state.draft_content["P3"]["functional"][0]["id"] == "REQ-D001"
+    assert state.draft_content["P4"]["scenarios"][0]["scenario"] == "REQ-D001 覆盖父需求 REQ-001"
+    assert state.draft_content["P5"]["metrics"][0]["name"] == "Must Have 范围预算"
 
 
 @patch("prd_flow.main.assemble_prd")
@@ -213,16 +213,14 @@ def test_run_derive_mode_auto_fixes_similar_module(
     assert state.target_module == "payment_gateway"
 
 
-@patch("prd_flow.main.assemble_prd")
 @patch("prd_flow.main.save_session")
 @patch("prd_flow.main.build_derive_context")
 def test_run_derive_mode_orphan_requirements_auto_included(
     mock_build_context: MagicMock,
     mock_save_session: MagicMock,
-    mock_assemble_prd: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """Orphan requirements are automatically included with tentative=True."""
+    """Orphan requirements are excluded from final derive output."""
     context = _make_success_context(
         module_name="payment_gateway",
         related_requirements=[{"id": "REQ-001", "text": "支持支付"}],
@@ -231,8 +229,6 @@ def test_run_derive_mode_orphan_requirements_auto_included(
         orphan_requirements=[{"id": "REQ-010", "text": "支付退款"}],
     )
     mock_build_context.return_value = context
-
-    mock_assemble_prd.return_value = "# Derive PRD\n"
 
     output_file = tmp_path / "derive_output.md"
     args = _make_args(output=str(output_file))
@@ -244,19 +240,70 @@ def test_run_derive_mode_orphan_requirements_auto_included(
     mock_save_session.assert_called_once()
     state = mock_save_session.call_args[0][0]
 
-    # Orphan requirements should be merged into functional requirements
+    # Orphan requirements should not be merged into functional requirements.
     functional = state.draft_content["P3"]["functional"]
-    req_ids = [r["id"] for r in functional]
-    assert "REQ-001-1" in req_ids
-    assert "REQ-001-2" in req_ids
-    assert "REQ-010-1" in req_ids
-    assert "REQ-010-2" in req_ids
+    parent_ids = [r.get("parent_req") for r in functional]
+    assert parent_ids == ["REQ-001"]
+    assert "REQ-010" not in parent_ids
 
-    # Check that orphan-derived reqs have tentative=True
-    orphan_derived = [r for r in functional if r.get("parent_req") == "REQ-010"]
-    assert len(orphan_derived) == 2
-    for req in orphan_derived:
-        assert req.get("tentative") is True
+
+@patch("prd_flow.main.save_session")
+@patch("prd_flow.main.build_derive_context")
+def test_run_derive_mode_generates_one_child_requirement_per_parent_requirement(
+    mock_build_context: MagicMock,
+    mock_save_session: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Derive narrows scope instead of splitting every parent requirement into interface/core pairs."""
+    mock_build_context.return_value = _make_success_context(
+        module_name="Identity Module",
+        related_requirements=[
+            {"id": "REQ-015", "text": "系统应支持学生通过手机号和短信验证码登录。", "priority": "Must Have"},
+            {"id": "REQ-016", "text": "系统应生成 6 位数字短信验证码。", "priority": "Must Have"},
+        ],
+        interfaces=[{"name": "短信验证码发送", "method": "POST"}],
+        dependencies=[],
+    )
+
+    output_file = tmp_path / "derive_output.md"
+    args = _make_args(target_module="Identity Module", output=str(output_file))
+
+    result = run_derive_mode(args)
+
+    assert result == EXIT_SUCCESS
+    mock_save_session.assert_called_once()
+    state = mock_save_session.call_args[0][0]
+    functional = state.draft_content["P3"]["functional"]
+    assert [req["parent_req"] for req in functional] == ["REQ-015", "REQ-016"]
+    assert all(not req["id"].endswith("-1") and not req["id"].endswith("-2") for req in functional)
+    assert "REQ-015" in output_file.read_text(encoding="utf-8")
+
+
+@patch("prd_flow.main._write_error_report")
+@patch("prd_flow.main.build_derive_context")
+def test_run_derive_mode_blocks_when_must_budget_is_exceeded(
+    mock_build_context: MagicMock,
+    mock_write_error_report: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Derive quality gate blocks outputs that are too broad for a focused child PRD."""
+    mock_build_context.return_value = _make_success_context(
+        module_name="large_module",
+        related_requirements=[
+            {"id": f"REQ-{idx:03d}", "text": f"模块必须支持第 {idx} 个可观察行为。", "priority": "Must Have"}
+            for idx in range(1, 10)
+        ],
+        interfaces=[],
+        dependencies=[],
+    )
+
+    output_file = tmp_path / "derive_output.md"
+    args = _make_args(target_module="large_module", output=str(output_file))
+
+    result = run_derive_mode(args)
+
+    assert result == EXIT_QUALITY_BLOCKED
+    mock_write_error_report.assert_called_once()
 
 
 @patch("prd_flow.main._write_error_report")

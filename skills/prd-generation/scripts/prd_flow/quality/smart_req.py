@@ -11,7 +11,7 @@ _MEASURABLE_PATTERNS = [
     r"\d+\s*(ms|s|秒|分钟|小时|天)",  # time
     r"\d+\s*%",  # percentage
     r"[≥≤<>]=?\s*\d+",  # comparisons with numbers
-    r"\d+\s*(个|条|次|位|MB|GB|TB)",  # counts and sizes
+    r"\d+\s*(个|条|次|位|张|轮|MB|GB|TB)",  # counts and sizes
 ]
 
 

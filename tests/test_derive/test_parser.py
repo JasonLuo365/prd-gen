@@ -26,6 +26,49 @@ doc_id: "PARENT-v1.0"
         assert result["doc_id"] == "PARENT-v1.0"
         assert len(result["requirements"]) == 2
         assert result["requirements"][0]["id"] == "REQ-005"
+        assert result["requirements"][0]["priority"] == "Must Have"
+    finally:
+        path.unlink()
+
+
+def test_parse_parent_prd_preserves_moscow_priority_and_nfrs():
+    prd_content = """---
+doc_id: "PARENT-v1.0"
+---
+
+# Requirements
+
+## 功能需求
+
+### Must Have
+- [REQ-001] 必须支持手机号登录
+
+### Should Have
+- [REQ-002] 应支持登录审计
+
+### Could Have
+- [REQ-003] 可支持登录风险分析
+
+## 非功能需求
+- [NFR-001] 登录接口 P95 <= 2 秒
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+        f.write(prd_content)
+        f.flush()
+        path = Path(f.name)
+
+    try:
+        result = parse_parent_prd(path)
+        priorities = {req["id"]: req["priority"] for req in result["requirements"]}
+        assert priorities == {
+            "REQ-001": "Must Have",
+            "REQ-002": "Should Have",
+            "REQ-003": "Could Have",
+        }
+        assert result["non_functional"] == [
+            {"id": "NFR-001", "text": "登录接口 P95 <= 2 秒"}
+        ]
     finally:
         path.unlink()
 

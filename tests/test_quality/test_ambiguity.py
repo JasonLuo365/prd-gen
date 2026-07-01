@@ -21,6 +21,16 @@ def test_detects_logic_inconsistency():
     assert len(logic) > 0
 
 
+def test_allows_measured_complete_answer_generation_latency():
+    reqs = [
+        {"id": "NFR-003", "text": "完整解答生成响应 P95 ≤ 20 秒，测量从学生点击查看完整解答到完整解答展示。"},
+        {"id": "REQ-010", "text": "系统应在完整解答中按步骤说明关键推导过程。"},
+    ]
+    result = scan_ambiguity("", requirements=reqs)
+
+    assert result["logic"] == []
+
+
 def test_detects_completeness_gap():
     reqs = [
         {"id": "REQ-001", "text": "用户可注册登录"},

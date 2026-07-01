@@ -20,12 +20,16 @@ from prd_flow.quality.reporter import format_quality_report
 from prd_flow.quality.smart_req import check_smart_req
 from prd_flow.quality.suggest import suggest_fix
 from prd_flow.derive.context_builder import build_derive_context
-from prd_flow.derive.decision_rules import find_best_module_match, resolve_orphan_requirements
+from prd_flow.derive.decision_rules import find_best_module_match
 from prd_flow.derive.auto_fixer import (
     fix_vague_quantifiers,
     fix_measurable,
     fix_parent_req,
     generate_interface_scenarios,
+)
+from prd_flow.derive.quality_gates import (
+    check_derive_scope_budget,
+    check_parent_traceability,
 )
 from prd_flow.session import SessionState, save_session, load_session
 
@@ -334,12 +338,10 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     interfaces = context.get("interfaces", [])
     dependencies = context.get("dependencies", [])
 
-    # 4. Auto-resolve orphan requirements (Option A: include with tentative=True)
+    # 4. Keep orphan requirements out of focused derive output.
     orphan_requirements = context.get("orphan_requirements", [])
     if orphan_requirements:
-        print(f"\n注意: 发现 {len(orphan_requirements)} 条孤儿需求，自动纳入并标记为 tentative")
-        resolved = resolve_orphan_requirements(orphan_requirements)
-        related_requirements = related_requirements + resolved
+        print(f"\n注意: 发现 {len(orphan_requirements)} 条孤儿需求，已排除出当前模块派生范围")
 
     # 5. Log summary (no user confirmation needed)
     print(f"\n模块: {module_name}")
@@ -377,55 +379,66 @@ def run_derive_mode(args: argparse.Namespace) -> int:
 
     # D2: Problem Statement — auto-prefill from module context
     phase2 = ProblemStatementPhase(state)
-    target_users = "系统用户"
+    target_users = "该模块的上游调用方和受其行为影响的系统用户"
+    module_responsibility = ""
+    if isinstance(context.get("module"), dict):
+        module_responsibility = context["module"].get("responsibility", "")
     if related_requirements:
         first_req_text = _clean_req_text(related_requirements[0].get("text", ""))
-        pain_points = f"当前系统在 {first_req_text} 方面存在能力不足"
+        pain_points = f"上层节点中与 {module_name} 相关的行为需要被收窄到该模块边界内：{first_req_text}"
     else:
-        pain_points = "未明确"
-    opportunity = f"由 {module_name} 模块统一封装能力，降低上层系统复杂度"
+        pain_points = f"上层架构已定义 {module_name} 边界，但父 PRD 中未找到可安全归属到该模块的需求"
+    opportunity = (
+        f"由 {module_name} 只承接自身拥有的行为"
+        + (f"（{module_responsibility}）" if module_responsibility else "")
+        + "，避免把父层复杂度平移到子 PRD。"
+    )
     phase2.collect(target_users=target_users, pain_points=pain_points, opportunity=opportunity)
 
-    # D3: Requirements — for each related requirement, create 2 sub-reqs
+    # D3: Requirements — one focused child requirement per owned parent requirement
     phase3 = RequirementsPhase(state)
     functional = []
     parent_reqs_for_fix = related_requirements  # used by fix_parent_req
-    for req in related_requirements:
+    for index, req in enumerate(related_requirements, start=1):
         req_id = req.get("id", "REQ-UNKNOWN")
         req_text = _clean_req_text(req.get("text", ""))
-        is_tentative = req.get("tentative", False)
         parent_priority = req.get("priority", "Must Have")
-        sub_req_1 = {
-            "id": f"{req_id}-1",
-            "text": f"{module_name} 应提供 {req_text} 的接口封装",
+        child_req = {
+            "id": f"REQ-D{index:03d}",
+            "text": f"{module_name} 应在自身职责边界内满足父需求：{req_text}",
             "priority": parent_priority,
             "gherkin_count": 1,
             "parent_req": req_id,
         }
-        sub_req_2 = {
-            "id": f"{req_id}-2",
-            "text": f"{module_name} 应实现 {req_text} 的核心逻辑",
-            "priority": parent_priority,
-            "gherkin_count": 1,
-            "parent_req": req_id,
-        }
-        if is_tentative:
-            sub_req_1["tentative"] = True
-            sub_req_2["tentative"] = True
-        # Apply auto-fixers
-        sub_req_1 = fix_vague_quantifiers(sub_req_1)
-        sub_req_1 = fix_measurable(sub_req_1)
-        sub_req_1 = fix_parent_req(sub_req_1, parent_reqs_for_fix)
+        child_req = fix_vague_quantifiers(child_req)
+        child_req = fix_measurable(child_req)
+        child_req = fix_parent_req(child_req, parent_reqs_for_fix)
+        functional.append(child_req)
 
-        sub_req_2 = fix_vague_quantifiers(sub_req_2)
-        sub_req_2 = fix_measurable(sub_req_2)
-        sub_req_2 = fix_parent_req(sub_req_2, parent_reqs_for_fix)
-
-        functional.append(sub_req_1)
-        functional.append(sub_req_2)
-
-    non_functional = [{"id": "NFR-001", "text": f"模块 {module_name} 应符合上层架构约束"}]
+    non_functional = []
+    for index, nfr in enumerate(context.get("related_non_functional", [])[:2], start=1):
+        non_functional.append(
+            {
+                "id": f"NFR-D{index:03d}",
+                "text": f"{module_name} 应在模块边界内继承父级非功能约束：{_clean_req_text(nfr.get('text', ''))}",
+            }
+        )
+    if not non_functional:
+        non_functional = [{"id": "NFR-D001", "text": f"{module_name} 的派生 PRD Must Have 数量应 <= 8 条"}]
     phase3.collect(functional=functional, non_functional=non_functional)
+
+    derive_gate_errors: list[str] = []
+    traceability_result = check_parent_traceability(functional)
+    if not traceability_result.passed:
+        derive_gate_errors.extend(traceability_result.errors)
+    budget_result = check_derive_scope_budget(functional)
+    for warning in budget_result.warnings:
+        print(f"[WARNING] {warning}")
+    if not budget_result.passed:
+        derive_gate_errors.extend(budget_result.errors)
+    if derive_gate_errors:
+        _write_error_report(state, derive_gate_errors, args)
+        return EXIT_QUALITY_BLOCKED
 
     # Quality gate after D3 — auto-fix failures
     smart_results = _run_smart_check(state)
@@ -482,19 +495,40 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             if req.get("id", "") in gap_ids:
                 req["gherkin_count"] = req.get("gherkin_count", 0) + 1
 
-    # D4: Acceptance — auto-generate from interfaces (2 scenarios per interface)
+    # D4: Acceptance — generate focused scenarios from owned requirements and interfaces
     phase4 = AcceptancePhase(state)
-    scenarios = generate_interface_scenarios(module_name, interfaces)
+    scenarios = [
+        {
+            "feature": module_name,
+            "scenario": f"{req.get('id')} 覆盖父需求 {req.get('parent_req')}",
+            "given": f"{module_name} 已按上层架构边界运行",
+            "when": f"执行与 {req.get('parent_req')} 对应的模块行为",
+            "then": f"模块满足派生需求 {req.get('id')} 的可观察结果",
+            "req_id": req.get("id"),
+        }
+        for req in state.draft_content.get("P3", {}).get("functional", [])
+        if req.get("priority") == "Must Have"
+    ]
+    if interfaces and len(scenarios) <= 4:
+        scenarios.extend(generate_interface_scenarios(module_name, interfaces[:1]))
     # Also include any auto-generated coverage scenarios
     if "P4" in state.draft_content and state.draft_content["P4"].get("scenarios"):
         scenarios = state.draft_content["P4"]["scenarios"] + scenarios
     phase4.collect(scenarios=scenarios)
 
-    # D5: Success Metrics — auto-fill default metrics
+    # D5: Success Metrics — keep derive metrics small and focused
     phase5 = SuccessMetricsPhase(state)
     metrics = [
-        {"name": "接口响应时间", "target": "≤ 200ms", "method": "性能测试"},
-        {"name": "接口可用性", "target": "≥ 99.9%", "method": "监控统计"},
+        {
+            "name": "Must Have 范围预算",
+            "target": "≤ 8 条",
+            "method": "统计当前派生 PRD 中 priority 为 Must Have 的功能需求数量",
+        },
+        {
+            "name": "父需求追溯覆盖率",
+            "target": "100%",
+            "method": "统计每条派生功能需求是否包含 parent_req 并引用父 PRD 中存在的需求 ID",
+        },
     ]
     phase5.collect(metrics=metrics)
 

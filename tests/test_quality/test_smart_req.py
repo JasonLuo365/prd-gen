@@ -20,6 +20,13 @@ def test_measurable_passes_with_numeric_metric():
     assert result.measurable is True
 
 
+def test_measurable_passes_with_image_and_round_counts():
+    for text in ("最多包含 3 张图片", "最多进行 5 轮成功展示的分层提示"):
+        req = {"id": "REQ-003", "text": text, "priority": "Must Have"}
+        result = check_smart_req(req)
+        assert result.measurable is True
+
+
 def test_testable_passes_with_gherkin():
     req = {
         "id": "REQ-004",

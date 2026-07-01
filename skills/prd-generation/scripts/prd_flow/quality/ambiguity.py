@@ -50,14 +50,8 @@ def _scan_logic_inconsistency(requirements: list[dict]) -> list[dict]:
     findings = []
 
     # Check for latency vs thoroughness tension
-    has_latency_req = any(
-        "≤" in r.get("text", "") and ("ms" in r.get("text", "") or "秒" in r.get("text", ""))
-        for r in requirements
-    )
-    has_thoroughness_req = any(
-        "完整" in r.get("text", "") or "全量" in r.get("text", "")
-        for r in requirements
-    )
+    has_latency_req = any(_is_latency_requirement(r.get("text", "")) for r in requirements)
+    has_thoroughness_req = any(_is_unbounded_thoroughness_requirement(r.get("text", "")) for r in requirements)
 
     if has_latency_req and has_thoroughness_req:
         findings.append({
@@ -67,6 +61,19 @@ def _scan_logic_inconsistency(requirements: list[dict]) -> list[dict]:
         })
 
     return findings
+
+
+def _is_latency_requirement(text: str) -> bool:
+    has_threshold = "≤" in text or "<=" in text
+    return has_threshold and ("ms" in text or "秒" in text)
+
+
+def _is_unbounded_thoroughness_requirement(text: str) -> bool:
+    if "完整解答" in text:
+        return False
+    if "全量" in text:
+        return True
+    return "完整" in text and any(marker in text for marker in ("处理", "校验", "扫描", "计算", "同步", "检查"))
 
 
 def _scan_completeness_gaps(text: str, requirements: list[dict]) -> list[str]:

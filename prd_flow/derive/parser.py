@@ -54,16 +54,40 @@ def parse_parent_prd(path: Path) -> dict:
             content = body
 
     requirements = []
-    req_pattern = r"- \[(REQ-\d+)\] (.+?)(?=\n- \[|\n## |\Z)"
-    for match in re.finditer(req_pattern, content, re.DOTALL):
-        req_id = match.group(1)
-        req_text = match.group(2).strip()
-        requirements.append({"id": req_id, "text": req_text})
+    non_functional = []
+    current_priority = "Must Have"
+    for line in content.splitlines():
+        stripped = line.strip()
+        heading = stripped.lstrip("#").strip()
+        if heading in {"Must Have", "Should Have", "Could Have"}:
+            current_priority = heading
+            continue
+
+        req_match = re.match(r"- \[(REQ-\d+)\]\s+(.+)$", stripped)
+        if req_match:
+            requirements.append(
+                {
+                    "id": req_match.group(1),
+                    "text": req_match.group(2).strip(),
+                    "priority": current_priority,
+                }
+            )
+            continue
+
+        nfr_match = re.match(r"- \[(NFR-\d+)\]\s+(.+)$", stripped)
+        if nfr_match:
+            non_functional.append(
+                {
+                    "id": nfr_match.group(1),
+                    "text": nfr_match.group(2).strip(),
+                }
+            )
 
     return {
         "doc_id": frontmatter.get("doc_id", "UNKNOWN") if isinstance(frontmatter, dict) else "UNKNOWN",
         "frontmatter": frontmatter,
         "requirements": requirements,
+        "non_functional": non_functional,
         "raw_content": content,
     }
 
