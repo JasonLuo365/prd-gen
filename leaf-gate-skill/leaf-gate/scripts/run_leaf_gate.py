@@ -72,7 +72,7 @@ def find_first(node_dir: Path, names: Iterable[str], patterns: Iterable[str]) ->
         if candidate.exists() and candidate.is_file():
             return candidate
     for pattern in patterns:
-        matches = sorted(node_dir.glob(pattern))
+        matches = sorted(path for path in node_dir.glob(pattern) if not path.name.startswith("leaf-gate."))
         if matches:
             return matches[0]
     return None
@@ -652,7 +652,7 @@ def contract_fields(architecture_text: str) -> Dict[str, bool]:
         "outputs": [r"\boutputs?\b", r"\bresponse\b", "输出", "响应", "返回"],
         "errors": [r"\berrors?\b", r"\bfailure\b", "错误", "异常", "错误码", "失败"],
         "states": [r"\bstates?\b", r"\btransition\b", "状态", "状态机", "流转"],
-        "side_effects": [r"\bside effects?\b", r"\beffects?\b", "副作用", "持久化", "写入", "发送", "操作"],
+        "side_effects": [r"\bside[_ -]effects?\b", r"\bside effects?\b", r"\beffects?\b", "副作用", "持久化", "写入", "发送", "操作"],
         "dependencies": [r"\bdependencies\b", r"\bdepends on\b", "依赖", "外部系统", "调用"],
     }
     found: Dict[str, bool] = {}
@@ -996,11 +996,29 @@ def refinement_routes(static_report: Dict[str, Any], llm_report: Optional[Dict[s
             )
 
     if llm_report:
+        explicit_llm_routes: set[str] = set()
+        for route in llm_report.get("refinement_routes") or []:
+            target = route.get("target")
+            criterion = route.get("criterion")
+            if target not in REFINEMENT_TARGETS or not criterion:
+                continue
+            explicit_llm_routes.add(str(criterion))
+            add_route(
+                routes,
+                target,
+                str(criterion),
+                route.get("reason") or "Semantic judgement requires artifact refinement.",
+                route.get("actions") or ["Resolve the semantic judgement issue, then rerun Leaf Gate."],
+                route.get("evidence") or [],
+            )
+
         judgement = llm_report.get("llm_judgement", {})
         for criterion, item in judgement.items():
             item_status = str(item.get("status", "")).lower()
             confidence = float(item.get("confidence", 0))
-            if item_status in {"warn", "fail"} or confidence < DEFAULT_THRESHOLDS["min_llm_confidence"]:
+            if (
+                item_status in {"warn", "fail"} or confidence < DEFAULT_THRESHOLDS["min_llm_confidence"]
+            ) and criterion not in explicit_llm_routes:
                 add_route(
                     routes,
                     "owner_decision",

@@ -150,6 +150,51 @@ def test_find_artifacts_uses_architecture_output_package(tmp_path: Path) -> None
     assert node_dir / "architecture" / "validation-report.md" in artifacts.architecture_files
 
 
+def test_find_artifacts_ignores_leaf_gate_refinement_markdown(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-identity"
+    _write_node(node_dir)
+    (node_dir / "leaf-gate.refinement.architecture.md").write_text(
+        """# Leaf Gate Refinement Suggestions: architecture
+
+This generated handoff is not an architecture source artifact.
+""",
+        encoding="utf-8",
+    )
+
+    artifacts = leaf_gate.find_artifacts(node_dir)
+
+    assert artifacts.architecture == node_dir / "architecture" / "output"
+    assert node_dir / "leaf-gate.refinement.architecture.md" not in artifacts.architecture_files
+    assert node_dir / "architecture" / "output" / "06-interface-contracts.md" in artifacts.architecture_files
+
+
+def test_contract_fields_accept_snake_case_side_effects() -> None:
+    leaf_gate = _load_leaf_gate_module()
+    architecture_text = """# Interface Contracts
+
+| field | value |
+|---|---|
+| inputs | request body |
+| outputs | response body |
+| errors | 400 invalid |
+| states | created -> active |
+| side_effects | creates auth session and writes audit record |
+| dependencies | Redis, Audit Log |
+"""
+
+    fields = leaf_gate.contract_fields(architecture_text)
+
+    assert fields == {
+        "inputs": True,
+        "outputs": True,
+        "errors": True,
+        "states": True,
+        "side_effects": True,
+        "dependencies": True,
+    }
+
+
 def test_build_report_prepares_traceability_and_risks(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L0-root"
@@ -379,6 +424,78 @@ def test_target_refinement_markdown_only_contains_target_routes(tmp_path: Path) 
     assert "REQ-D002" in testcase_markdown
     assert "architecture/output/06-interface-contracts.md" not in testcase_markdown
     assert "side_effects" not in testcase_markdown
+
+
+def test_llm_refinement_routes_preserve_target_specific_feedback(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-problem-intake"
+    _write_node(node_dir)
+    llm_path = node_dir / "leaf-gate.llm.json"
+    llm_path.write_text(
+        json.dumps(
+            {
+                "node_id": "L1-problem-intake",
+                "llm_judgement": {
+                    "C1_behavior_complexity": {
+                        "status": "pass",
+                        "confidence": 0.9,
+                        "evidence": ["testcase.feature covers a single upload behavior group."],
+                        "reason": "Behavior scope is narrow enough.",
+                    },
+                    "C2_contract_boundary": {
+                        "status": "pass",
+                        "confidence": 0.9,
+                        "evidence": ["architecture/output/06-interface-contracts.md defines API fields."],
+                        "reason": "Contract boundary is explicit.",
+                    },
+                    "C3_ai_context_control": {
+                        "status": "pass",
+                        "confidence": 0.9,
+                        "evidence": ["No AI-owned context is present in this node."],
+                        "reason": "AI context is not a blocker.",
+                    },
+                    "C4_verifiability": {
+                        "status": "warn",
+                        "confidence": 0.86,
+                        "evidence": ["testcase.feature lacks a precise 200ms acceptance probe."],
+                        "reason": "Testcase owner must add the missing performance probe.",
+                    },
+                    "C5_risk_decomposition": {
+                        "status": "pass",
+                        "confidence": 0.9,
+                        "evidence": ["risks.md has no unresolved high risk."],
+                        "reason": "No decomposition-caused risk remains.",
+                    },
+                },
+                "recommended_decision": "NEEDS_REFINEMENT",
+                "summary": "Needs testcase refinement only.",
+                "refinement_routes": [
+                    {
+                        "target": "testcase",
+                        "criterion": "C4_verifiability",
+                        "reason": "The performance oracle belongs in testcase evidence.",
+                        "actions": ["Add a tagged scenario that measures the 200ms upload acknowledgement."],
+                        "evidence": ["testcase.feature lacks a precise 200ms acceptance probe."],
+                    }
+                ],
+                "suggested_next_action": {"type": "refine_spec", "children": [], "notes": []},
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+    report = leaf_gate.build_report(node_dir, llm_path)
+    routes = report["refinement_routes"]
+
+    assert report["decision"] == "NEEDS_REFINEMENT"
+    assert any(route["target"] == "testcase" for route in routes)
+    assert not any(
+        route["target"] == "owner_decision" and route["criterion"] == "C4_verifiability"
+        for route in routes
+    )
+    testcase_markdown = leaf_gate.render_refinement_markdown(report, target="testcase")
+    assert "200ms upload acknowledgement" in testcase_markdown
 
 
 def test_main_writes_split_refinement_markdown_next_to_json_output(tmp_path: Path, monkeypatch) -> None:
