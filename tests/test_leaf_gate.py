@@ -336,7 +336,7 @@ def test_weak_architecture_evidence_routes_to_architecture_refinement(tmp_path: 
     (output_dir / "01-system-overview.md").write_text(
         """# 01 - System Overview
 
-系统包含图片相关能力。
+系统支持 JPG/PNG。
 """,
         encoding="utf-8",
     )

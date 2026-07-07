@@ -43,15 +43,32 @@ node-id/
     validation-report.md
 ```
 
+Architecture generator output folders are also supported directly:
+
+```text
+node-id/
+  prd.md
+  *.feature
+  output/
+    01-system-overview.md
+    02-module-partitioning.md
+    03-runtime-architecture.md
+    04-adr-summary.md
+    05-data-model.md
+    06-interface-contracts.md
+    07-technology-choices.md
+    08-deployment.md
+```
+
 When `traceability.md` or `risks.md` is absent or stale, `scripts/run_leaf_gate.py` refreshes them from the current PRD, testcase, architecture package, and validation report before static checks. Use `--skip-prepare` only when intentionally reviewing existing evidence files without regenerating them.
 
 Generated traceability uses deterministic evidence strength:
 
 | Strength | Meaning | Gate effect |
 | --- | --- | --- |
-| `strong` | Direct REQ/NFR ID match, or architecture contract evidence plus boundary/value terms and product terms. | Counts as covered. |
-| `medium` | Architecture contract evidence plus multiple product/action terms, or boundary/value terms plus product terms. | Counts as covered. |
-| `weak` | Only broad or partial terms match. | Fails C4 as `weak_evidence`; do not send to human review. |
+| `strong` | Direct REQ/NFR ID match, or architecture contract evidence plus strong boundary/profile terms. | Counts as covered. |
+| `medium` | Architecture contract evidence plus multiple project profile or generic identifier matches. | Counts as covered. |
+| `weak` | Only broad or partial lexical overlap matches. | Fails C4 as `weak_evidence`; do not send to human review. |
 | `none` | No usable architecture evidence. | Fails C4 as `missing_architecture`. |
 
 Weak or missing architecture evidence is a refinement issue, not a decomposition shortcut. The static decision should be `NEEDS_REFINEMENT` unless behavior complexity also fails, in which case `NEEDS_DECOMPOSITION` takes priority.
@@ -73,7 +90,54 @@ For derive-layer PRDs, treat derived IDs as the current-layer requirements:
 python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.json
 ```
 
+When artifact names differ from the conventions, pass them explicitly:
+
+```bash
+python scripts/run_leaf_gate.py <node-dir> \
+  --prd prd.md \
+  --feature guided-math-assistant.feature \
+  --architecture output \
+  --config leaf-gate.config.json \
+  --profile leaf-gate.profile.json \
+  --output <node-dir>/leaf-gate.static.json
+```
+
+Configuration is JSON and can be supplied by convention or flag:
+
+```json
+{
+  "thresholds": {
+    "max_scenario_points": 10,
+    "max_implementation_pack_tokens": 18000
+  },
+  "profile_path": "leaf-gate.profile.json",
+  "profile": {
+    "trace_terms": ["checkout", "receipt"],
+    "trace_synonyms": {
+      "receipt": ["receiptId", "order confirmation"]
+    },
+    "architecture_markers": ["PaymentGateway"],
+    "risk_class_patterns": {
+      "payment": ["\\bpayment\\b", "\\bbilling\\b"]
+    },
+    "high_risk_classes": ["payment"]
+  }
+}
+```
+
+`leaf-gate.profile.json` uses the same `profile` fields. The core checker has no project-specific trace vocabulary; project terms must come from the profile or appear as generic identifiers/API paths/numeric boundaries in the artifacts.
+
+The static report includes canonical parsed items under existing report fields:
+
+- `requirements.items[]` contains normalized requirements with source refs.
+- `C1_behavior_complexity.evidence.scenarios[]` contains normalized scenarios, tags, steps summary, parser name, and source refs.
+- `C2_contract_boundary.evidence.contracts[]` contains normalized contract evidence.
+- `C5_risk_decomposition.evidence.items[]` contains normalized risk-class observations.
+
+Gherkin parsing first tries `gherkin-official` when it is already installed. Otherwise the stdlib fallback handles adjacent tags, Scenario Outline examples, step lines, and source line refs.
+
 When `--output` is provided, the script also writes `<output-dir>/leaf-gate.refinement.md` as an index. Detailed human-readable handoffs are split by target: `leaf-gate.refinement.architecture.md`, `leaf-gate.refinement.testcase.md`, and `leaf-gate.refinement.owner_decision.md` when those targets exist.
+When the static decision is `NEEDS_DECOMPOSITION`, the script also writes `leaf-gate.decomposition.md` with generic child-node cut suggestions.
 
 2. Confirm the generated `traceability.md`, `risks.md`, `leaf-gate.refinement.md`, and target-specific refinement files reflect the current node scope. If they show missing testcase coverage, missing architecture evidence, or open high risk, do not override that gap in the LLM judgement.
 3. Read `references/leaf_gate_rubric.md`.

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Leaf Gate Static Report",
+  "type": "object",
+  "required": ["node_id", "decision", "summary", "static_checks", "next_action"],
+  "properties": {
+    "node_id": { "type": "string" },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "LEAF_READY",
+        "NEEDS_DECOMPOSITION",
+        "NEEDS_REFINEMENT",
+        "STATIC_PASS_REQUIRES_LLM"
+      ]
+    },
+    "summary": { "type": "string" },
+    "thresholds": { "type": "object" },
+    "config": { "type": "object" },
+    "static_checks": { "type": "object" },
+    "llm_judgement": { "type": ["object", "null"] },
+    "refinement_routes": { "type": "array" },
+    "next_action": { "type": "object" }
+  }
+}

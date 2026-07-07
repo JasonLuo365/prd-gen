@@ -2,6 +2,13 @@
   "node_id": "",
   "decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_REFINEMENT",
   "summary": "",
+  "thresholds": {},
+  "config": {
+    "config_path": "",
+    "profile_path": "",
+    "profile": {},
+    "warnings": []
+  },
   "static_checks": {
     "C1_behavior_complexity": {},
     "C2_contract_boundary": {},

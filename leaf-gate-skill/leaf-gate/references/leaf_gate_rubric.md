@@ -36,6 +36,7 @@ Static evidence:
 - max steps per scenario
 - max REQ tags per scenario
 - untagged scenarios
+- normalized `Scenario` items and parser name from the static report
 
 LLM evidence:
 
@@ -63,6 +64,7 @@ Static evidence:
 
 - architecture artifact exists
 - required contract fields or terms appear
+- normalized `Contract` items from the static report
 
 LLM evidence:
 
@@ -118,6 +120,7 @@ Static evidence:
 - traceability file exists
 - unmapped requirements
 - untagged scenarios
+- profile-backed or generic identifier architecture evidence strength
 
 LLM evidence:
 
@@ -144,6 +147,7 @@ Static evidence:
 - risk register exists
 - unresolved high-risk count
 - open question count
+- normalized `Risk` observations from the static report
 
 LLM evidence:
 
@@ -176,3 +180,7 @@ For `NEEDS_REFINEMENT`, include `refinement_routes` with one or more targets:
 - `architecture`: contract fields, dependencies, side effects, architecture evidence, risk mitigations that belong in architecture.
 - `testcase`: missing scenario coverage, missing tags, unobservable Then clauses, metric/test probes.
 - `owner_decision`: product, business, compliance, risk-acceptance, or low-confidence semantic decisions that generation must not invent.
+
+## Project Profile Boundary
+
+The checker is project-neutral by default. Domain terms, aliases, architecture markers, and custom risk classes must come from `leaf-gate.profile.json` or the `profile` section of `leaf-gate.config.json`. Do not treat a missing profile match as proof that the architecture is absent; use it as a refinement signal unless direct IDs or generic identifiers already provide enough evidence.
