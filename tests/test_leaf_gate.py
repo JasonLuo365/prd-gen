@@ -195,6 +195,32 @@ def test_contract_fields_accept_snake_case_side_effects() -> None:
     }
 
 
+def test_architecture_obligation_ids_are_current_leaf_requirements() -> None:
+    leaf_gate = _load_leaf_gate_module()
+    requirements = leaf_gate.parse_requirements(
+        """# Requirements
+
+- [REQ-A001] Deliver the student-facing frontend and browser-level verification.
+  parent_req: REQ-001
+- [REQ-DB001] Apply the initial database migration from an empty database.
+  parent_req: REQ-002
+- [REQ-EVT001] Publish ProblemSubmitted after persistence succeeds.
+  parent_req: REQ-003
+"""
+    )
+
+    assert [requirement.id for requirement in requirements] == [
+        "REQ-A001",
+        "REQ-DB001",
+        "REQ-EVT001",
+    ]
+    assert [requirement.parent_id for requirement in requirements] == [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+    ]
+
+
 def test_build_report_prepares_traceability_and_risks(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L0-root"

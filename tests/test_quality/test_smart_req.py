@@ -20,6 +20,21 @@ def test_measurable_passes_with_numeric_metric():
     assert result.measurable is True
 
 
+def test_measurable_passes_with_observable_outcome_without_numeric_metric():
+    req = {"id": "REQ-003A", "text": "系统应拒绝无效手机号并返回错误提示", "priority": "Must Have"}
+    result = check_smart_req(req)
+    assert result.measurable is True
+
+
+def test_measurable_passes_with_explain_and_use_outcomes():
+    for text in (
+        "系统应在完整解答中按步骤说明关键推导过程",
+        "提示和完整解答应使用人教 A 版教材中的标准术语",
+    ):
+        result = check_smart_req({"id": "REQ-003B", "text": text, "priority": "Must Have"})
+        assert result.measurable is True
+
+
 def test_measurable_passes_with_image_and_round_counts():
     for text in ("最多包含 3 张图片", "最多进行 5 轮成功展示的分层提示"):
         req = {"id": "REQ-003", "text": text, "priority": "Must Have"}

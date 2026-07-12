@@ -14,6 +14,50 @@ _MEASURABLE_PATTERNS = [
     r"\d+\s*(个|条|次|位|张|轮|MB|GB|TB)",  # counts and sizes
 ]
 
+_OBSERVABLE_OUTCOME_WORDS = [
+    "支持",
+    "提供",
+    "实现",
+    "生成",
+    "拒绝",
+    "返回",
+    "展示",
+    "显示",
+    "记录",
+    "说明",
+    "使用",
+    "完成",
+    "处理",
+    "执行",
+    "创建",
+    "校验",
+    "验证",
+    "限制",
+    "禁止",
+    "允许",
+    "失效",
+    "上传",
+    "登录",
+    "选择",
+    "点击",
+    "包含",
+    "不得",
+    "不再",
+    "仅在",
+    "should",
+    "shall",
+    "must",
+    "execute",
+    "complete",
+    "process",
+    "reject",
+    "return",
+    "display",
+    "create",
+    "record",
+    "validate",
+]
+
 
 @dataclass
 class SMARTResult:
@@ -48,10 +92,12 @@ def check_smart_req(req: dict) -> SMARTResult:
         found = [vw for vw in _VAGUE_WORDS if vw in text]
         result.issues.append(f"包含模糊量词: {', '.join(found)}")
 
-    # Measurable: Check for numeric patterns
-    result.measurable = any(re.search(p, text) for p in _MEASURABLE_PATTERNS)
+    # Measurable: numeric metric or observable pass/fail behavior.
+    result.measurable = any(re.search(p, text) for p in _MEASURABLE_PATTERNS) or any(
+        word in text for word in _OBSERVABLE_OUTCOME_WORDS
+    )
     if not result.measurable:
-        result.issues.append("无可量化指标，建议补充具体数值")
+        result.issues.append("缺少可验证指标或可观察结果")
 
     # Testable: Must-Have must have Gherkin coverage
     if priority == "Must Have":

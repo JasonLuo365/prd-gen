@@ -243,7 +243,7 @@ def test_suggest_fix_for_measurable_failure():
     req = {"id": "REQ-002", "text": "支持用户注册"}
     result = SMARTResult(req_id="REQ-002", specific=True, measurable=False, testable=True)
     fix = suggest_fix(req, result)
-    assert "数值指标" in fix
+    assert "已授权的指标" in fix
 
 
 def test_suggest_fix_for_testable_failure():

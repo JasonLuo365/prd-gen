@@ -44,6 +44,11 @@ def _run_smart_check(state: SessionState) -> list:
     return [check_smart_req(req) for req in functional]
 
 
+def _authoritative_derive_requirements(requirements: list[dict]) -> list[dict]:
+    """Preserve every parent requirement and its original MoSCoW priority."""
+    return list(requirements)
+
+
 def _check_gherkin_coverage(state: SessionState) -> list[dict]:
     """检查每条 Must-Have 需求是否至少对应一个 Gherkin 场景。
 
@@ -335,19 +340,68 @@ def run_derive_mode(args: argparse.Namespace) -> int:
 
     module_name = context["module_name"]
     related_requirements = context.get("related_requirements", [])
+    authoritative_requirements = _authoritative_derive_requirements(related_requirements)
     interfaces = context.get("interfaces", [])
+    actionable_interfaces = [
+        interface
+        for interface in interfaces
+        if interface.get("name")
+        and interface.get("method")
+        and interface.get("request_fields")
+        and interface.get("response_fields")
+    ]
     dependencies = context.get("dependencies", [])
+    events = context.get("events", [])
+    external_dependencies = context.get("external_dependencies", [])
+    data_assets = context.get("data_assets", [])
+    related_scenarios = context.get("related_scenarios", [])
+    implementation_surfaces = context.get("implementation_surfaces", [])
 
-    # 4. Keep orphan requirements out of focused derive output.
+    # 4. Keep a transparent parent-coverage ledger without blocking this target.
     orphan_requirements = context.get("orphan_requirements", [])
-    if orphan_requirements:
-        print(f"\n注意: 发现 {len(orphan_requirements)} 条孤儿需求，已排除出当前模块派生范围")
+    derive_warnings = list(
+        context.get("derive_warnings", context.get("coverage_gaps", []))
+    )
+    derive_warnings.extend(
+        f"Parent requirement {req.get('id', 'UNKNOWN')} has no owner at the selected derive granularity."
+        for req in orphan_requirements
+    )
+    derive_warnings = list(dict.fromkeys(derive_warnings))
+    coverage_ledger = list(context.get("coverage_ledger", []))
+    if not coverage_ledger:
+        coverage_ledger.extend(
+            {
+                "id": req.get("id", "UNKNOWN"),
+                "kind": "requirement",
+                "owners": [module_name],
+                "status": "inherited_by_target",
+            }
+            for req in related_requirements
+        )
+        coverage_ledger.extend(
+            {
+                "id": req.get("id", "UNKNOWN"),
+                "kind": "requirement",
+                "owners": [],
+                "status": "unassigned",
+            }
+            for req in orphan_requirements
+        )
+    coverage_complete = bool(coverage_ledger) and all(
+        item.get("status") != "unassigned" for item in coverage_ledger
+    )
 
     # 5. Log summary (no user confirmation needed)
     print(f"\n模块: {module_name}")
     print(f"相关需求: {len(related_requirements)} 条")
     print(f"接口: {len(interfaces)} 个")
+    print(f"事件契约: {len(events)} 个")
     print(f"依赖: {len(dependencies)} 个")
+    print(f"实现面: {', '.join(implementation_surfaces) if implementation_surfaces else 'domain_logic'}")
+    print(
+        "父需求分发: "
+        + ("完整" if coverage_complete else "存在尚未分配项，详见覆盖账本")
+    )
 
     # 6. Initialize SessionState
     state = SessionState(
@@ -368,10 +422,17 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         module_name=module_name,
         interfaces=interfaces,
         dependencies=dependencies,
+        events=events,
+        implementation_surfaces=implementation_surfaces,
         priority="P0",
         author="Claude",
     )
     print(f"\n生成文档ID: {state.draft_content['P1']['doc_id']}")
+
+    if derive_warnings:
+        print("\n[WARNING] 派生覆盖提示（不阻断当前目标生成）:")
+        for warning in derive_warnings:
+            print(f"  - {warning}")
 
     # Helper: clean requirement text (take first line only, strip markdown)
     def _clean_req_text(text: str) -> str:
@@ -383,8 +444,8 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     module_responsibility = ""
     if isinstance(context.get("module"), dict):
         module_responsibility = context["module"].get("responsibility", "")
-    if related_requirements:
-        first_req_text = _clean_req_text(related_requirements[0].get("text", ""))
+    if authoritative_requirements:
+        first_req_text = _clean_req_text(authoritative_requirements[0].get("text", ""))
         pain_points = f"上层节点中与 {module_name} 相关的行为需要被收窄到该模块边界内：{first_req_text}"
     else:
         pain_points = f"上层架构已定义 {module_name} 边界，但父 PRD 中未找到可安全归属到该模块的需求"
@@ -398,34 +459,370 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     # D3: Requirements — one focused child requirement per owned parent requirement
     phase3 = RequirementsPhase(state)
     functional = []
-    parent_reqs_for_fix = related_requirements  # used by fix_parent_req
-    for index, req in enumerate(related_requirements, start=1):
+    parent_to_child: dict[str, str] = {}
+    parent_reqs_for_fix = authoritative_requirements  # used by fix_parent_req
+    for index, req in enumerate(authoritative_requirements, start=1):
         req_id = req.get("id", "REQ-UNKNOWN")
         req_text = _clean_req_text(req.get("text", ""))
         parent_priority = req.get("priority", "Must Have")
+        child_id = f"REQ-D{index:03d}"
+        parent_to_child[req_id] = child_id
+        inherited_scenario_count = sum(
+            1
+            for scenario in related_scenarios
+            if req_id in scenario.get("requirement_ids", [])
+        )
         child_req = {
-            "id": f"REQ-D{index:03d}",
+            "id": child_id,
             "text": f"{module_name} 应在自身职责边界内满足父需求：{req_text}",
             "priority": parent_priority,
-            "gherkin_count": 1,
+            "gherkin_count": max(inherited_scenario_count, 1 if parent_priority == "Must Have" else 0),
             "parent_req": req_id,
+            "source_kind": "parent_requirement",
+            "implementation_surfaces": context.get("requirement_surfaces", {}).get(
+                req_id,
+                ["domain_logic"],
+            ),
         }
         child_req = fix_vague_quantifiers(child_req)
         child_req = fix_measurable(child_req)
         child_req = fix_parent_req(child_req, parent_reqs_for_fix)
         functional.append(child_req)
 
-    non_functional = []
-    for index, nfr in enumerate(context.get("related_non_functional", [])[:2], start=1):
-        non_functional.append(
+    architecture_req_index = 1
+    interface_req_ids: dict[str, str] = {}
+    parent_arch_to_child: dict[str, str] = {}
+    artifact_parent_refs = context.get("artifact_parent_refs", {})
+
+    frontend_requirement_id: str | None = None
+    frontend_related_reqs = [
+        parent_to_child[req.get("id", "")]
+        for req in authoritative_requirements
+        if "frontend" in context.get("requirement_surfaces", {}).get(req.get("id", ""), [])
+        and req.get("id", "") in parent_to_child
+    ]
+    if "frontend" in implementation_surfaces and frontend_related_reqs:
+        frontend_requirement_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_frontend_refs = list(dict.fromkeys(artifact_parent_refs.get("frontend", [])))
+        for parent_ref in parent_frontend_refs:
+            parent_arch_to_child[parent_ref] = frontend_requirement_id
+        frontend_contracts = [
+            " ".join(
+                part
+                for part in (interface.get("method", ""), interface.get("path", ""))
+                if part
+            )
+            for interface in actionable_interfaces
+            if "web app" in str(interface.get("consumer", "")).casefold()
+        ]
+        contract_clause = (
+            f"并通过父架构声明的 {', '.join(frontend_contracts)} 完成交互"
+            if frontend_contracts
+            else "并通过父架构声明的公开接口完成交互"
+        )
+        functional.append(
             {
-                "id": f"NFR-D{index:03d}",
-                "text": f"{module_name} 应在模块边界内继承父级非功能约束：{_clean_req_text(nfr.get('text', ''))}",
+                "id": frontend_requirement_id,
+                "text": (
+                    f"{module_name} 必须提供可部署、可测试的学生端前端实现，包含完成 "
+                    f"{', '.join(frontend_related_reqs)} 及其父级验收场景所需的页面、组件、交互状态和 API 客户端，"
+                    f"{contract_clause}；输入、点击、选择、上传、禁用、展示、错误提示和重试等可观察行为"
+                    "不得以 API 实现或后端测试替代。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_frontend_refs)
+                    if parent_frontend_refs
+                    else "ARCH:03-runtime-architecture.md#Web App"
+                ),
+                "related_reqs": frontend_related_reqs,
+                "source_kind": "architecture_frontend",
+                "implementation_surfaces": ["frontend"],
             }
         )
-    if not non_functional:
-        non_functional = [{"id": "NFR-D001", "text": f"{module_name} 的派生 PRD Must Have 数量应 <= 8 条"}]
+
+    for interface in actionable_interfaces:
+        interface_id = interface.get("contract_id") or interface.get("name") or interface.get("path")
+        child_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        interface_req_ids[str(interface_id)] = child_id
+        parent_interface_refs = context.get("interface_parent_refs", {}).get(str(interface_id), [])
+        for parent_ref in parent_interface_refs:
+            parent_arch_to_child[parent_ref] = child_id
+        operation = " ".join(
+            part for part in (interface.get("method", ""), interface.get("path", "")) if part
+        )
+        request_fields = ", ".join(interface.get("request_fields", []))
+        response_fields = ", ".join(interface.get("response_fields", []))
+        error_codes = ", ".join(interface.get("error_codes", []))
+        error_clause = f"；错误码仅使用架构已声明的 {error_codes}" if error_codes else ""
+        interface_role = interface.get("ownership_role", "provider")
+        role_clause = {
+            "consumer": "必须集成、消费并处理父架构接口",
+            "provider_and_consumer": "必须提供、集成并消费父架构接口",
+        }.get(interface_role, "必须提供并实现父架构接口")
+        functional.append(
+            {
+                "id": child_id,
+                "text": (
+                    f"{module_name} {role_clause} {interface.get('name', interface_id)}（{operation}）："
+                    f"输入字段为 {request_fields}；输出字段为 {response_fields}{error_clause}。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_interface_refs)
+                    if parent_interface_refs
+                    else f"ARCH:06-interface-contracts.md#{interface_id}"
+                ),
+                "source_kind": "architecture_interface",
+                "implementation_surfaces": ["api_backend"],
+            }
+        )
+
+    data_requirement_id: str | None = None
+    if data_assets:
+        data_requirement_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_data_refs = context.get("data_parent_refs", [])
+        for parent_ref in parent_data_refs:
+            parent_arch_to_child[parent_ref] = data_requirement_id
+        asset_names = ", ".join(asset.get("name", "UNKNOWN") for asset in data_assets)
+        functional.append(
+            {
+                "id": data_requirement_id,
+                "text": (
+                    f"{module_name} 必须为父架构定义的数据聚合 {asset_names} 及其在 05-data-model.md 中声明的"
+                    "实体和必需字段提供版本化持久化结构与数据库迁移，并验证迁移可在受支持的空数据库上完整创建所需结构。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_data_refs)
+                    if parent_data_refs
+                    else "ARCH:05-data-model.md"
+                ),
+                "source_kind": "architecture_data",
+                "implementation_surfaces": ["database_migration"],
+            }
+        )
+
+    event_req_ids: dict[str, str] = {}
+    for event in events:
+        event_key = str(event.get("contract_id") or event.get("event_name"))
+        child_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        event_req_ids[event_key] = child_id
+        parent_event_refs = artifact_parent_refs.get(f"event:{event_key}", [])
+        for parent_ref in parent_event_refs:
+            parent_arch_to_child[parent_ref] = child_id
+        required_fields = ", ".join(event.get("required_fields", []))
+        produced_fields = ", ".join(event.get("produced_fields", []))
+        functional.append(
+            {
+                "id": child_id,
+                "text": (
+                    f"{module_name} 必须按父架构事件契约生成、发布或处理事件 {event.get('event_name', event_key)}："
+                    f"发布者为 {event.get('publisher', 'UNKNOWN')}；消费者为 {event.get('consumers', 'UNKNOWN')}；"
+                    f"必需字段为 {required_fields}；产出字段为 {produced_fields}；"
+                    f"副作用为 {event.get('side_effects', 'None')}。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_event_refs)
+                    if parent_event_refs
+                    else f"ARCH:06-interface-contracts.md#{event_key}"
+                ),
+                "source_kind": "architecture_event",
+                "implementation_surfaces": ["domain_logic"],
+            }
+        )
+
+    adapter_req_ids: dict[str, str] = {}
+    for dependency in external_dependencies:
+        dependency_name = str(dependency.get("name", "UNKNOWN"))
+        normalized_dependency = "".join(ch.lower() for ch in dependency_name if ch.isalnum())
+        artifact_key = f"adapter:{normalized_dependency}"
+        child_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        adapter_req_ids[normalized_dependency] = child_id
+        parent_adapter_refs = artifact_parent_refs.get(artifact_key, [])
+        for parent_ref in parent_adapter_refs:
+            parent_arch_to_child[parent_ref] = child_id
+        evidence = _clean_req_text(str(dependency.get("evidence", "父架构依赖声明")))
+        functional.append(
+            {
+                "id": child_id,
+                "text": (
+                    f"{module_name} 必须提供外部依赖适配器 {dependency_name}，并按父架构证据“{evidence}”"
+                    "封装调用、失败处理和领域边界，禁止把适配器实现视为外部团队自动提供。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_adapter_refs)
+                    if parent_adapter_refs
+                    else f"ARCH:{dependency.get('source', 'architecture')}#{dependency_name}"
+                ),
+                "source_kind": "architecture_adapter",
+                "implementation_surfaces": ["external_adapter"],
+            }
+        )
+
+    worker_requirement_id: str | None = None
+    if "worker_job" in implementation_surfaces:
+        worker_requirement_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_worker_refs = artifact_parent_refs.get("worker", [])
+        for parent_ref in parent_worker_refs:
+            parent_arch_to_child[parent_ref] = worker_requirement_id
+        functional.append(
+            {
+                "id": worker_requirement_id,
+                "text": (
+                    f"{module_name} 必须提供父架构定义的 Worker/调度作业入口，执行该模块拥有的定时或异步行为，"
+                    "并记录可验证的成功、失败与重试结果。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_worker_refs)
+                    if parent_worker_refs
+                    else "ARCH:03-runtime-architecture.md#worker"
+                ),
+                "source_kind": "architecture_worker",
+                "implementation_surfaces": ["worker_job"],
+            }
+        )
+
+    runtime_requirement_id: str | None = None
+    if "integration_wiring" in implementation_surfaces:
+        runtime_requirement_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_runtime_refs = artifact_parent_refs.get(f"runtime:{module_name}", [])
+        for parent_ref in parent_runtime_refs:
+            parent_arch_to_child[parent_ref] = runtime_requirement_id
+        functional.append(
+            {
+                "id": runtime_requirement_id,
+                "text": (
+                    f"{module_name} 必须提供可由父层运行时装配的公开入口、配置和集成连接点，"
+                    "并验证模块在父架构部署拓扑中可启动且已声明契约可达；父层 wiring 不得被当作无需实现。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_runtime_refs)
+                    if parent_runtime_refs
+                    else "ARCH:03-runtime-architecture.md;ARCH:08-deployment.md"
+                ),
+                "source_kind": "architecture_runtime",
+                "implementation_surfaces": ["integration_wiring"],
+            }
+        )
+
+    observability_requirement_id: str | None = None
+    related_success_metrics = context.get("related_success_metrics", [])
+    observable_nfrs = [
+        nfr
+        for nfr in context.get("related_non_functional", [])
+        if any(
+            marker in nfr.get("text", "").casefold()
+            for marker in ("p95", "p99", "%", "成功率", "可追溯", "审计", "测量", "日志", "指标")
+        )
+    ]
+    if related_success_metrics or observable_nfrs:
+        observability_requirement_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_observability_refs = artifact_parent_refs.get(
+            f"observability:{module_name}",
+            [],
+        )
+        for parent_ref in parent_observability_refs:
+            parent_arch_to_child[parent_ref] = observability_requirement_id
+        metric_parts = [
+            f"{metric.get('name', metric.get('id', 'metric'))} {metric.get('target', '')}".strip()
+            for metric in related_success_metrics
+        ]
+        metric_parts.extend(
+            f"{nfr.get('id', 'NFR')} {nfr.get('text', '')}" for nfr in observable_nfrs
+        )
+        metric_summary = "; ".join(metric_parts)
+        metric_refs = [
+            metric.get("id") or metric.get("name", "metric")
+            for metric in related_success_metrics
+        ]
+        metric_refs.extend(nfr.get("id", "NFR") for nfr in observable_nfrs)
+        functional.append(
+            {
+                "id": observability_requirement_id,
+                "text": (
+                    f"{module_name} 必须记录并提供可验证的观测证据以测量父级成功指标：{metric_summary}；"
+                    "证据的统计口径、起止点和排除条件必须沿用父级定义。"
+                ),
+                "priority": "Must Have",
+                "gherkin_count": 1,
+                "parent_req": (
+                    ", ".join(parent_observability_refs)
+                    if parent_observability_refs
+                    else "MET:" + ", ".join(metric_refs)
+                ),
+                "source_kind": "architecture_observability",
+                "implementation_surfaces": ["observability"],
+            }
+        )
+
+    inherited_architecture_req_ids: dict[str, str] = {}
+    for parent_arch_req in context.get("related_architecture_requirements", []):
+        parent_id = parent_arch_req.get("id", "")
+        if not parent_id or parent_id in parent_arch_to_child:
+            continue
+        child_id = f"REQ-A{architecture_req_index:03d}"
+        architecture_req_index += 1
+        parent_arch_to_child[parent_id] = child_id
+        inherited_architecture_req_ids[parent_id] = child_id
+        source_kind = parent_arch_req.get("source_kind", "architecture_inherited")
+        default_surfaces = {
+            "architecture_frontend": ["frontend"],
+            "architecture_event": ["domain_logic"],
+            "architecture_adapter": ["external_adapter"],
+            "architecture_worker": ["worker_job"],
+        }.get(source_kind, ["domain_logic"])
+        functional.append(
+            {
+                "id": child_id,
+                "text": (
+                    f"{module_name} 应在自身架构边界内继续满足父级架构义务："
+                    f"{_clean_req_text(parent_arch_req.get('text', ''))}"
+                ),
+                "priority": parent_arch_req.get("priority", "Must Have"),
+                "gherkin_count": 1,
+                "parent_req": parent_id,
+                "source_kind": source_kind,
+                "implementation_surfaces": parent_arch_req.get(
+                    "implementation_surfaces",
+                    default_surfaces,
+                ),
+            }
+        )
+
+    non_functional = []
+    parent_nfr_to_child: dict[str, str] = {}
+    for index, nfr in enumerate(context.get("related_non_functional", []), start=1):
+        child_nfr_id = f"NFR-D{index:03d}"
+        parent_nfr_to_child[nfr.get("id", "NFR-UNKNOWN")] = child_nfr_id
+        non_functional.append(
+            {
+                "id": child_nfr_id,
+                "text": f"{module_name} 应在模块边界内继承父级非功能约束：{_clean_req_text(nfr.get('text', ''))}",
+                "parent_nfr": nfr.get("id", "NFR-UNKNOWN"),
+            }
+        )
     phase3.collect(functional=functional, non_functional=non_functional)
+    state.draft_content["P3"]["non_goals"] = list(context.get("non_goals", []))
 
     derive_gate_errors: list[str] = []
     traceability_result = check_parent_traceability(functional)
@@ -495,22 +892,178 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             if req.get("id", "") in gap_ids:
                 req["gherkin_count"] = req.get("gherkin_count", 0) + 1
 
-    # D4: Acceptance — generate focused scenarios from owned requirements and interfaces
+    # D4: Acceptance — preserve parent behavior, then add architecture verification.
     phase4 = AcceptancePhase(state)
-    scenarios = [
-        {
-            "feature": module_name,
-            "scenario": f"{req.get('id')} 覆盖父需求 {req.get('parent_req')}",
-            "given": f"{module_name} 已按上层架构边界运行",
-            "when": f"执行与 {req.get('parent_req')} 对应的模块行为",
-            "then": f"模块满足派生需求 {req.get('id')} 的可观察结果",
-            "req_id": req.get("id"),
+    scenarios: list[dict] = []
+    inherited_parent_ids: set[str] = set()
+    for parent_scenario in related_scenarios:
+        mapped_tags = []
+        for parent_id in parent_scenario.get("requirement_ids", []):
+            child_id = (
+                parent_to_child.get(parent_id)
+                or parent_nfr_to_child.get(parent_id)
+                or parent_arch_to_child.get(parent_id)
+            )
+            if child_id and child_id not in mapped_tags:
+                mapped_tags.append(child_id)
+                inherited_parent_ids.add(parent_id)
+        if not mapped_tags:
+            continue
+        inherited = {
+            "feature": parent_scenario.get("feature", module_name),
+            "scenario": parent_scenario.get("scenario", "父级验收场景"),
+            "steps": [dict(step) for step in parent_scenario.get("steps", [])],
+            "tags": mapped_tags,
         }
-        for req in state.draft_content.get("P3", {}).get("functional", [])
-        if req.get("priority") == "Must Have"
-    ]
-    if interfaces and len(scenarios) <= 4:
-        scenarios.extend(generate_interface_scenarios(module_name, interfaces[:1]))
+        functional_tag = next((tag for tag in mapped_tags if tag.startswith("REQ-")), None)
+        if functional_tag:
+            inherited["req_id"] = functional_tag
+        scenarios.append(inherited)
+
+    for req in authoritative_requirements:
+        parent_id = req.get("id", "")
+        if req.get("priority", "Must Have") != "Must Have" or parent_id in inherited_parent_ids:
+            continue
+        child_id = parent_to_child[parent_id]
+        scenarios.append(
+            {
+                "feature": module_name,
+                "scenario": f"{child_id} 覆盖父需求 {parent_id}",
+                "given": f"{module_name} 已按上层架构边界运行",
+                "when": f"执行父需求 {parent_id} 定义的行为",
+                "then": f"完整保留父需求 {parent_id} 的可观察结果",
+                "req_id": child_id,
+                "tags": [child_id],
+            }
+        )
+
+    for interface in actionable_interfaces:
+        interface_id = str(interface.get("contract_id") or interface.get("name") or interface.get("path"))
+        derived_req_id = interface_req_ids[interface_id]
+        for scenario in generate_interface_scenarios(module_name, [interface]):
+            scenario["req_id"] = derived_req_id
+            scenario["tags"] = [derived_req_id]
+            scenarios.append(scenario)
+
+    if frontend_requirement_id:
+        scenarios.append(
+            {
+                "feature": f"{module_name} 学生端前端",
+                "scenario": f"{frontend_requirement_id} 完整实现父级前端交互",
+                "given": "父级验收场景和 Web App 到公开接口的契约已经定义",
+                "when": f"学生在浏览器中执行 {', '.join(frontend_related_reqs)} 对应的输入、点击、选择、上传或重试行为",
+                "then": "前端呈现全部声明的控件、状态、禁用规则、结果和错误提示，并由 UI 级测试验证，不以 API 响应代替界面行为",
+                "req_id": frontend_requirement_id,
+                "tags": [frontend_requirement_id],
+            }
+        )
+
+    for event in events:
+        event_key = str(event.get("contract_id") or event.get("event_name"))
+        derived_req_id = event_req_ids[event_key]
+        fields = ", ".join(event.get("required_fields", []))
+        scenarios.append(
+            {
+                "feature": f"{module_name} 事件契约",
+                "scenario": f"{derived_req_id} 处理事件 {event.get('event_name', event_key)}",
+                "given": f"事件触发条件满足且发布者为 {event.get('publisher', 'UNKNOWN')}",
+                "when": f"{module_name} 发布或消费事件 {event.get('event_name', event_key)}",
+                "then": f"事件载荷包含 {fields} 并执行架构声明的副作用",
+                "req_id": derived_req_id,
+                "tags": [derived_req_id],
+            }
+        )
+
+    for dependency in external_dependencies:
+        dependency_name = str(dependency.get("name", "UNKNOWN"))
+        normalized_dependency = "".join(ch.lower() for ch in dependency_name if ch.isalnum())
+        derived_req_id = adapter_req_ids[normalized_dependency]
+        scenarios.append(
+            {
+                "feature": f"{module_name} 外部适配器",
+                "scenario": f"{derived_req_id} 通过适配器调用 {dependency_name}",
+                "given": f"{module_name} 需要使用外部依赖 {dependency_name}",
+                "when": f"模块发起 {dependency_name} 调用",
+                "then": "调用仅通过模块拥有的适配器完成，并记录成功或失败结果",
+                "req_id": derived_req_id,
+                "tags": [derived_req_id],
+            }
+        )
+
+    if worker_requirement_id:
+        scenarios.append(
+            {
+                "feature": f"{module_name} Worker",
+                "scenario": f"{worker_requirement_id} 执行调度作业",
+                "given": "父架构定义的调度触发条件已经满足",
+                "when": f"{module_name} Worker 执行该模块拥有的作业",
+                "then": "作业产生可验证的成功或失败结果，并按声明记录重试状态",
+                "req_id": worker_requirement_id,
+                "tags": [worker_requirement_id],
+            }
+        )
+
+    if runtime_requirement_id:
+        scenarios.append(
+            {
+                "feature": f"{module_name} 运行时集成",
+                "scenario": f"{runtime_requirement_id} 接入父层部署拓扑",
+                "given": "父层运行时、配置与依赖连接点可用",
+                "when": f"装配并启动 {module_name}",
+                "then": "模块公开入口可达且已声明接口、事件和依赖连接能够完成集成验证",
+                "req_id": runtime_requirement_id,
+                "tags": [runtime_requirement_id],
+            }
+        )
+
+    if observability_requirement_id:
+        metric_name_parts = [
+            metric.get("name", metric.get("id", "metric"))
+            for metric in related_success_metrics
+        ]
+        metric_name_parts.extend(nfr.get("id", "NFR") for nfr in observable_nfrs)
+        metric_names = ", ".join(metric_name_parts)
+        scenarios.append(
+            {
+                "feature": f"{module_name} 可观测性",
+                "scenario": f"{observability_requirement_id} 产出成功指标证据",
+                "given": "父级成功指标的统计口径、起止点和排除条件已定义",
+                "when": f"{module_name} 执行与 {metric_names} 相关的业务行为",
+                "then": "系统记录足以按父级方法计算指标结果的观测证据",
+                "req_id": observability_requirement_id,
+                "tags": [observability_requirement_id],
+            }
+        )
+
+    for parent_id, child_id in inherited_architecture_req_ids.items():
+        if parent_id in inherited_parent_ids:
+            continue
+        scenarios.append(
+            {
+                "feature": f"{module_name} 架构义务",
+                "scenario": f"{child_id} 继承父级架构义务 {parent_id}",
+                "given": f"父级架构义务 {parent_id} 已生效",
+                "when": f"{module_name} 执行对应架构行为",
+                "then": f"完整保留父级架构义务 {parent_id} 的可观察结果",
+                "req_id": child_id,
+                "tags": [child_id],
+            }
+        )
+
+    if data_requirement_id:
+        asset_names = ", ".join(asset.get("name", "UNKNOWN") for asset in data_assets)
+        scenarios.append(
+            {
+                "feature": f"{module_name} 数据迁移",
+                "scenario": f"{data_requirement_id} 创建父架构数据结构",
+                "given": "受支持的数据库为空且父架构数据模型可用",
+                "when": f"应用 {module_name} 的版本化数据库迁移",
+                "then": f"成功创建 {asset_names} 及其全部已声明实体和必需字段所需的持久化结构且迁移报告无错误",
+                "req_id": data_requirement_id,
+                "tags": [data_requirement_id],
+            }
+        )
+
     # Also include any auto-generated coverage scenarios
     if "P4" in state.draft_content and state.draft_content["P4"].get("scenarios"):
         scenarios = state.draft_content["P4"]["scenarios"] + scenarios
@@ -522,7 +1075,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         {
             "name": "Must Have 范围预算",
             "target": "≤ 8 条",
-            "method": "统计当前派生 PRD 中 priority 为 Must Have 的功能需求数量",
+            "method": "统计当前派生 PRD 中来自父业务需求且 priority 为 Must Have 的功能需求数量；架构实现义务单独计数",
         },
         {
             "name": "父需求追溯覆盖率",
@@ -530,6 +1083,14 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             "method": "统计每条派生功能需求是否包含 parent_req 并引用父 PRD 中存在的需求 ID",
         },
     ]
+    metrics.extend(
+        {
+            "name": metric.get("name", metric.get("id", "父级指标")),
+            "target": metric.get("target", "按父级定义"),
+            "method": metric.get("method", "按父级测量方式"),
+        }
+        for metric in context.get("related_success_metrics", [])
+    )
     phase5.collect(metrics=metrics)
 
     # Final assembly
@@ -554,6 +1115,21 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     output_path = Path(args.output) if args.output else Path(f"{parent_doc}_{module_name_out}_prd_v{version}.md")
     output_path.write_text(prd_text, encoding="utf-8")
     print(f"\nPRD已保存至: {output_path}")
+
+    coverage_path = output_path.with_suffix(".coverage.json")
+    coverage_report = {
+        "parent_doc_id": context.get("parent_doc_id", "UNKNOWN"),
+        "target_module": module_name,
+        "target_granularity": context.get("target_granularity", "auto"),
+        "status": "allocation_complete" if coverage_complete else "allocation_incomplete",
+        "items": coverage_ledger,
+        "warnings": derive_warnings,
+    }
+    coverage_path.write_text(
+        json.dumps(coverage_report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"派生覆盖账本已保存至: {coverage_path}")
 
     session_path = Path(f".prd_session_{state.session_id}.json")
     save_session(state, session_path)
@@ -625,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-module", help="Target module name for Derive mode")
     parser.add_argument(
         "--target-granularity",
-        choices=["auto", "deployable_module", "bounded_context"],
+        choices=["auto", "deployable_module", "bounded_context", "component"],
         default="auto",
         help="Target level for Derive mode",
     )

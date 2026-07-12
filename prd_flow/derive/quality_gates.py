@@ -26,7 +26,12 @@ def check_derive_scope_budget(
     The warning limit is advisory. The block limit is intentionally strict:
     Derive should narrow a parent node, not recreate a broad root-style PRD.
     """
-    must_count = sum(1 for req in functional if req.get("priority") == "Must Have")
+    must_count = sum(
+        1
+        for req in functional
+        if req.get("priority") == "Must Have"
+        and not str(req.get("source_kind", "")).startswith("architecture_")
+    )
     warnings: list[str] = []
     errors: list[str] = []
 

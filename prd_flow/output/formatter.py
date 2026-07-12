@@ -38,11 +38,26 @@ def format_requirements(data: dict) -> str:
                 lines.append(f'- [{req["id"]}] {req["text"]}')
                 if req.get("parent_req"):
                     lines.append(f'  - parent_req: {req["parent_req"]}')
+                if req.get("implementation_surfaces"):
+                    surfaces = ", ".join(req["implementation_surfaces"])
+                    lines.append(f"  - implementation_surfaces: [{surfaces}]")
+                if req.get("related_reqs"):
+                    related_reqs = ", ".join(req["related_reqs"])
+                    lines.append(f"  - related_reqs: [{related_reqs}]")
+                if req.get("source_kind"):
+                    lines.append(f'  - source_kind: {req["source_kind"]}')
             lines.append("")
 
     lines.append("## 非功能需求")
     for nfr in data.get("non_functional", []):
         lines.append(f'- [{nfr["id"]}] {nfr["text"]}')
+        if nfr.get("parent_nfr"):
+            lines.append(f'  - parent_nfr: {nfr["parent_nfr"]}')
+
+    if data.get("non_goals"):
+        lines.append("\n## 不涉及 / Non-goals")
+        for non_goal in data["non_goals"]:
+            lines.append(f"- {non_goal}")
 
     return "\n".join(lines)
 
@@ -53,12 +68,21 @@ def format_acceptance(data: dict) -> str:
 
     for sc in data.get("scenarios", []):
         lines.append(f'Feature: {sc.get("feature", "")}')
+        tags = sc.get("tags", [])
+        if not tags and sc.get("req_id"):
+            tags = [sc["req_id"]]
+        if tags:
+            lines.append("  " + " ".join(f"@{tag}" for tag in tags))
         lines.append(f'  Scenario: {sc.get("scenario", "")}')
-        lines.append(f'    Given {sc.get("given", "")}')
-        lines.append(f'    When {sc.get("when", "")}')
-        for and_step in sc.get("and_steps", []):
-            lines.append(f'    And {and_step}')
-        lines.append(f'    Then {sc.get("then", "")}')
+        if sc.get("steps"):
+            for step in sc["steps"]:
+                lines.append(f'    {step.get("keyword", "And")} {step.get("text", "")}')
+        else:
+            lines.append(f'    Given {sc.get("given", "")}')
+            lines.append(f'    When {sc.get("when", "")}')
+            for and_step in sc.get("and_steps", []):
+                lines.append(f'    And {and_step}')
+            lines.append(f'    Then {sc.get("then", "")}')
         lines.append("")
 
     lines.append("```")

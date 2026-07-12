@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "skills" / "prd-generation" / "SKILL.md"
+CANONICAL_BACKEND = ROOT / "prd_flow"
+BUNDLED_BACKEND = SKILL_PATH.parent / "scripts" / "prd_flow"
 
 
 def read_skill() -> str:
@@ -161,6 +163,35 @@ def test_skill_requires_evidence_locked_testcase_generation() -> None:
     assert "Do not emit the final PRD while Final Testcase Readiness Review" in text
 
 
+def test_derive_orphans_remain_visible_without_blocking_sibling_targets() -> None:
+    text = read_skill()
+    assert "write a `*.coverage.json` ledger" in text
+    assert "mark the batch coverage as incomplete" in text
+    assert "they do not block generation of an otherwise valid current target" in text
+    assert "Exclude orphan requirements from final output by default" not in text
+
+
+def test_bundled_backend_matches_canonical_backend() -> None:
+    runtime_files = [
+        "main.py",
+        "derive/auto_fixer.py",
+        "derive/context_builder.py",
+        "derive/parser.py",
+        "derive/quality_gates.py",
+        "output/formatter.py",
+        "phases/frontmatter.py",
+        "quality/smart_req.py",
+        "quality/suggest.py",
+    ]
+    for relative_path in runtime_files:
+        canonical = CANONICAL_BACKEND / relative_path
+        bundled = BUNDLED_BACKEND / relative_path
+        assert bundled.exists(), f"Missing bundled backend file: {relative_path}"
+        assert canonical.read_bytes() == bundled.read_bytes(), (
+            f"Bundled backend drifted from canonical source: {relative_path}"
+        )
+
+
 if __name__ == "__main__":
     test_skill_frontmatter()
     test_skill_contains_required_sections()
@@ -171,4 +202,6 @@ if __name__ == "__main__":
     test_root_mode_prefers_choice_first_questions()
     test_skill_blocks_undefined_testcase_terms()
     test_skill_requires_evidence_locked_testcase_generation()
+    test_derive_orphans_remain_visible_without_blocking_sibling_targets()
+    test_bundled_backend_matches_canonical_backend()
     print("PRD generation skill static checks passed.")

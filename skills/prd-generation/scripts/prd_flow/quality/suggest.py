@@ -19,7 +19,7 @@ def suggest_fix(req: dict, smart_result: SMARTResult) -> str:
             suggestions.append("建议避免使用模糊描述，使用精确的术语")
 
     if not smart_result.measurable:
-        suggestions.append("建议补充数值指标，例如'≤ 200ms'、'≥ 99.9%'或'支持1000用户'")
+        suggestions.append("建议补充父 PRD 或架构包已授权的指标，或明确可观察的通过/失败结果")
 
     if not smart_result.testable:
         suggestions.append("建议补充至少1个Gherkin场景，格式：Given...When...Then...")

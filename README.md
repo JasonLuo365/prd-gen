@@ -75,6 +75,9 @@ architecture/
 - `auto`
 - `deployable_module`
 - `bounded_context`
+- `component`
+
+Derive 的首要职责是把父 PRD 的需求无损分发到子 PRD 集合。当前目标明确拥有的父需求、Gherkin、NFR、non-goal，以及前端/Web App、接口、数据库迁移、事件、外部适配器、Worker、运行时集成和观测义务会保留追踪关系并写入子 PRD。每次成功生成还会写出同名的 `*.coverage.json`：父层每项义务都会标记为 `inherited_by_target`、`assigned_to_other_targets` 或 `unassigned`。未分配项会令账本状态为 `allocation_incomplete` 并产生 warning，但不会阻断当前目标；`allocation_complete` 只表示父层义务都有预期子节点，不表示所有子 PRD 文件都已实际生成。输入无效、目标不存在或当前目标无法形成有效子 PRD时才阻断。
 
 ## Leaf Gate
 

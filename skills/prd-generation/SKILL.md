@@ -408,11 +408,11 @@ If `prd_flow` is unavailable, use the self-contained LLM fallback so the skill r
 4. Extract the module responsibility, granularity, public interfaces, dependencies, related parent requirements, constraints, risks, and source evidence files.
 5. Keep only parent requirements owned by the target module according to module responsibility, bounded context ownership, interfaces, data ownership, and events. Do not copy unrelated global requirements into every child PRD.
 6. Derive at most one focused child requirement per owned parent requirement. Preserve traceability with `parent_req`, `source`, and requirement-level MoSCoW priority.
-7. Exclude orphan parent requirements from the final child PRD unless the architecture evidence clearly assigns them to the target module. Report excluded orphan requirements in logs or a quality report; do not mark them `tentative` and include them by default.
+7. Build a coverage ledger across every sibling at the selected granularity. Mark each parent obligation as inherited by the current target, assigned to other targets, or unassigned. Unassigned items must remain visible as warnings and make the ledger incomplete, but they do not block generation of an otherwise valid current target.
 8. Generate focused Happy Path and Error Path Gherkin scenarios tied to child `@REQ-XXX` IDs and parent traces. Merge boundary cases where possible instead of expanding testcase count mechanically.
 9. Apply SMART-REQ, evidence-locked testcase, necessary-but-unstated, ambiguity, Gherkin coverage, and the focused Derive quality gates below before finalizing.
 
-Derive mode does not ask interactive follow-up questions. If the parent PRD or architecture package omits a necessary topic for the target module and it cannot be inferred as explicitly in scope or explicitly not applicable, treat the output as quality blocked and report the upstream question. Do not guess a disposition.
+Derive mode does not ask interactive follow-up questions. If the parent PRD or architecture package omits a decision needed to write valid behavior for the current target, treat that target as quality blocked and report the upstream question. Gaps belonging to other targets remain visible in the coverage ledger without blocking the current target. Do not guess a disposition.
 
 ### Focused Derive Quality Gates
 
@@ -423,10 +423,10 @@ Apply these gates in addition to the general quality gates:
 | Gate | Rule | Failure treatment |
 | --- | --- | --- |
 | Target Boundary Gate | `target_module` must resolve to exactly one deployable module or bounded context in the architecture package. | Input error; list candidate modules. |
-| Ownership Gate | Every child requirement must describe behavior owned by the target module's responsibility, interfaces, events, or data boundary. | Exclude unrelated requirements; quality-block if no owned requirements remain. |
+| Ownership Projection | Every child requirement must describe behavior owned by the target module's responsibility, interfaces, events, data boundary, or implementation surface. Every parent obligation must appear in the coverage ledger even when not assigned yet. | Inherit current-target items, record sibling assignments, and warn on unassigned items without silently discarding them. |
 | Parent Traceability Gate | Every child functional requirement must cite a parent `REQ-*` or authorized architecture source. | Quality-block missing traces. |
 | Scope Compression Gate | The child PRD must use a strict subset of parent behavior and must not repeat global constraints owned by other modules. | Quality-block broad copies or cross-module scope. |
-| Implementation Leakage Gate | Technologies, storage choices, workers, ACLs, caches, schema, service accounts, and deployment details must not become PRD Must-Haves unless they define observable behavior or testcase oracle. | Move to architecture handoff or dependencies; quality-block if left as product requirements. |
+| Architecture Obligation Projection | Frontend delivery, interfaces, data migrations, events, external adapters, workers, runtime wiring, and observability owned by the current target must remain explicit, traceable architecture requirements. Technology choices that do not create an observable obligation remain architecture context rather than product behavior. | Preserve current-target obligations; record missing or sibling ownership in the coverage ledger. |
 | Complexity Budget Gate | 3-6 Must-Haves is the healthy range; 7-8 Must-Haves is a warning requiring merge rationale; 9+ Must-Haves is quality-blocked by default. | Merge, narrow, or explicitly split the target before final PRD. |
 | Test Projection Gate | A child PRD should normally project to 3-8 acceptance scenarios. If it naturally projects much higher, merge scenarios or block as too broad. | Quality-block uncontrolled testcase expansion. |
 | Architecture Projection Gate | Derive may mark architecture concerns for handoff, but must not decide further decomposition. Leaf Gate remains responsible after child architecture and testcase generation. | Keep concerns as handoff notes; do not create another layer. |
@@ -435,8 +435,9 @@ Expected backend behavior:
 
 - Parse parent PRD and architecture package directory, README.md, zip, or legacy single architecture file.
 - Confirm `target_module` exists at the selected granularity or auto-match close names.
-- Extract interfaces, dependencies, related requirements, and orphan requirements.
-- Exclude orphan requirements from final output by default.
+- Extract interfaces, dependencies, related requirements, implementation surfaces, and orphan requirements.
+- Build a sibling ownership map and write a `*.coverage.json` ledger containing every parent requirement, architecture obligation, and NFR.
+- Do not block the current target merely because another parent obligation remains unassigned; mark the batch coverage as incomplete and surface a warning.
 - Generate one focused child requirement per owned parent requirement with `parent_req`.
 - Generate focused requirement and interface scenarios without mechanically multiplying testcase count.
 - Run automatic SMART-REQ, focused Derive scope budget, traceability, ambiguity, and Gherkin coverage checks.

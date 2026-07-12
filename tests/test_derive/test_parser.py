@@ -73,6 +73,90 @@ doc_id: "PARENT-v1.0"
         path.unlink()
 
 
+def test_parse_parent_prd_preserves_tagged_gherkin_steps(tmp_path: Path):
+    path = tmp_path / "prd.md"
+    path.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-002] 前端和后端都必须限制图片数量。
+
+# Acceptance
+
+```gherkin
+Feature: 图片数量限制
+  @REQ-002
+  Scenario: 第四张图片被前端阻止
+    Given 学生已选择 3 张图片
+    When 学生添加第 4 张图片
+    Then 前端不允许继续添加图片
+    And 后端不会收到第四张图片
+```
+""",
+        encoding="utf-8",
+    )
+
+    result = parse_parent_prd(path)
+
+    scenario = result["acceptance_scenarios"][0]
+    assert scenario["requirement_ids"] == ["REQ-002"]
+    assert scenario["steps"][-2:] == [
+        {"keyword": "Then", "text": "前端不允许继续添加图片"},
+        {"keyword": "And", "text": "后端不会收到第四张图片"},
+    ]
+
+
+def test_parse_parent_prd_preserves_derive_requirement_metadata(tmp_path: Path):
+    path = tmp_path / "derived.md"
+    path.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-A001] 模块必须提供上传接口。
+  - parent_req: ARCH:06-interface-contracts.md#UPLOAD
+  - implementation_surfaces: [api_backend, database_migration]
+  - related_reqs: [REQ-D001, REQ-D002]
+  - source_kind: architecture_interface
+""",
+        encoding="utf-8",
+    )
+
+    requirement = parse_parent_prd(path)["requirements"][0]
+
+    assert requirement["source_kind"] == "architecture_interface"
+    assert requirement["parent_req"] == "ARCH:06-interface-contracts.md#UPLOAD"
+    assert requirement["implementation_surfaces"] == ["api_backend", "database_migration"]
+    assert requirement["related_reqs"] == ["REQ-D001", "REQ-D002"]
+
+
+def test_parse_parent_prd_preserves_success_metrics(tmp_path: Path):
+    path = tmp_path / "metrics.md"
+    path.write_text(
+        """# Success Metrics
+
+| 指标 | 目标值 | 测量方式 |
+|---|---|---|
+| MET-001 首轮提示成功率 | >= 95% | 从提示请求开始，到提示展示结束。 |
+
+## 不涉及 / Non-goals
+- 当前版本不支持视频题目输入。
+""",
+        encoding="utf-8",
+    )
+
+    metrics = parse_parent_prd(path)["success_metrics"]
+
+    assert metrics == [
+        {
+            "id": "MET-001",
+            "name": "MET-001 首轮提示成功率",
+            "target": ">= 95%",
+            "method": "从提示请求开始，到提示展示结束。",
+        }
+    ]
+    assert parse_parent_prd(path)["non_goals"] == ["当前版本不支持视频题目输入。"]
+
+
 def test_parse_parent_prd_without_frontmatter():
     """没有 frontmatter 时也能正常解析。"""
     prd_content = "# Requirements\n\n## Must Have\n- [REQ-001] 基本功能\n"

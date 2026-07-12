@@ -32,6 +32,8 @@ class FrontmatterPhase(Phase):
                 module_name=self.state.parent_context["module_name"],
                 interfaces=self.state.parent_context["interfaces"],
                 dependencies=self.state.parent_context["dependencies"],
+                events=self.state.parent_context.get("events", []),
+                implementation_surfaces=self.state.parent_context.get("implementation_surfaces", []),
                 priority="P0",
             )
         project_name = input("项目名称：").strip()
@@ -56,6 +58,8 @@ class FrontmatterPhase(Phase):
                 module_name=self.state.parent_context["module_name"],
                 interfaces=self.state.parent_context["interfaces"],
                 dependencies=self.state.parent_context["dependencies"],
+                events=self.state.parent_context.get("events", []),
+                implementation_surfaces=self.state.parent_context.get("implementation_surfaces", []),
                 priority=priority,
                 author=author,
             )
@@ -85,6 +89,8 @@ class FrontmatterPhase(Phase):
         module_name: str,
         interfaces: list[dict],
         dependencies: list[dict],
+        events: list[dict] | None = None,
+        implementation_surfaces: list[str] | None = None,
         priority: str = "P0",
         author: str = "Claude",
     ) -> dict:
@@ -106,6 +112,8 @@ class FrontmatterPhase(Phase):
             "created_at": datetime.now().isoformat(),
             "interfaces": interfaces,
             "dependencies": dependencies,
+            "events": events or [],
+            "implementation_surfaces": implementation_surfaces or [],
         }
 
         self.update_state(data)

@@ -123,6 +123,11 @@ modules:
         assert "REQ-010" in orphan_ids
         assert "REQ-011" in orphan_ids
         assert "REQ-001" not in orphan_ids
+        ledger = {item["id"]: item for item in result["coverage_ledger"]}
+        assert ledger["REQ-001"]["status"] == "inherited_by_target"
+        assert ledger["REQ-010"]["status"] == "unassigned"
+        assert ledger["REQ-011"]["status"] == "unassigned"
+        assert result["coverage_complete"] is False
     finally:
         prd_path.unlink()
         arch_path.unlink()
@@ -328,3 +333,253 @@ doc_id: "PARENT-v1.0"
         intake = build_derive_context(prd_path, arch_path, "Problem Intake Module")
         assert intake["success"] is True
         assert {req["id"] for req in intake["related_requirements"]} == {"REQ-013"}
+
+
+def test_component_context_maps_problem_intake_requirements(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """---
+doc_id: "PROBLEM-INTAKE-v1.0"
+---
+
+# Requirements
+
+### Must Have
+- [REQ-D001] Problem Intake Module 应在自身职责边界内满足父需求：系统应支持学生上传 JPG/PNG 格式的题目图片作为答疑输入。
+- [REQ-D002] Problem Intake Module 应在自身职责边界内满足父需求：系统应限制单次题目输入最多包含 3 张图片；当学生已选择 3 张图片时，前端应禁止继续添加第 4 张；当后端收到超过 3 张图片的上传请求时，后端应拒绝请求并返回图片数量超限错误。
+- [REQ-D003] Problem Intake Module 应在自身职责边界内满足父需求：系统应拒绝单张超过 10MB、损坏图片、非 JPG/PNG 文件，或无法识别有效高中数学题的图片，并展示明确错误提示。
+- [REQ-D004] Problem Intake Module 应在自身职责边界内满足父需求：系统应在上传前向学生展示隐私提示，说明图片和会话数据仅用于本次答疑。
+- [REQ-D005] Problem Intake Module 应在自身职责边界内满足父需求：系统应从图片上传成功时间 T 起算，在 T + 30 天内允许读取该次答疑的原始图片和会话数据；到达 T + 30 天 + 1 分钟时，原始图片和会话数据必须变为系统不可读取。
+""",
+        encoding="utf-8",
+    )
+    arch_output = tmp_path / "architecture" / "output"
+    arch_output.mkdir(parents=True)
+    (arch_output / "02-module-partitioning.md").write_text(
+        """# 02 Module Partitioning
+
+## Component Partitioning
+
+| Component | Responsibility | Related Aggregate |
+|---|---|---|
+| Consent Component | 隐私提示展示、学生确认、同意记录管理 | PrivacyConsent |
+| Image Submission Component | 图片集提交、数量限制、对象存储写入 | ImageSubmission, RawImage |
+| Image Validation Component | 格式校验、大小校验、损坏检测 | ImageSubmission |
+| Math Recognition Component | 调用外部识别服务、解析识别结果 | MathProblemRecognition |
+| Session Lifecycle Component | 会话创建、状态管理、完成判定、保存期过期 | ProblemIntakeSession |
+""",
+        encoding="utf-8",
+    )
+
+    consent = build_derive_context(parent_prd, tmp_path / "architecture", "Consent Component", "component")
+    validation = build_derive_context(parent_prd, tmp_path / "architecture", "Image Validation Component", "component")
+    lifecycle = build_derive_context(parent_prd, tmp_path / "architecture", "Session Lifecycle Component", "component")
+
+    assert [req["id"] for req in consent["related_requirements"]] == ["REQ-D004"]
+    assert [req["id"] for req in validation["related_requirements"]] == ["REQ-D003"]
+    assert [req["id"] for req in lifecycle["related_requirements"]] == ["REQ-D005"]
+
+
+def test_recursive_derive_blocks_lost_parent_architecture_interface(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-D001] 系统应支持上传 JPG/PNG 图片作为答疑输入。
+  - parent_req: REQ-001
+  - source_kind: parent_requirement
+- [REQ-A001] 模块必须提供 GET /api/v1/problems/images/{imageId}/validation 查询接口。
+  - parent_req: ARCH:06-interface-contracts.md#API-PI-002
+  - source_kind: architecture_interface
+- [REQ-A002] 模块必须为 ProblemImage 提供数据库迁移。
+  - parent_req: ARCH:05-data-model.md
+  - source_kind: architecture_data
+- [REQ-A003] 模块必须按父架构事件契约生成、发布或处理事件 ImageUploaded。
+  - parent_req: ARCH:06-interface-contracts.md#EVT-PI-001
+  - source_kind: architecture_event
+- [REQ-A004] 模块必须记录并提供成功率指标证据。
+  - parent_req: MET:MET-001
+  - source_kind: architecture_observability
+- [REQ-A005] 模块必须提供学生端前端页面并完整实现 REQ-D001 的交互。
+  - parent_req: ARCH:03-runtime-architecture.md#Web App
+  - related_reqs: [REQ-D001]
+  - source_kind: architecture_frontend
+""",
+        encoding="utf-8",
+    )
+    arch_output = tmp_path / "architecture" / "output"
+    arch_output.mkdir(parents=True)
+    (arch_output / "02-module-partitioning.md").write_text(
+        """| Component | Responsibility | Related Aggregate |
+|---|---|---|
+| Image Submission Component | 图片集提交、数量限制、对象存储写入 | ImageSubmission |
+""",
+        encoding="utf-8",
+    )
+    (arch_output / "05-data-model.md").write_text(
+        """## Aggregate Roots
+| Aggregate Root | Responsibility | Stored In |
+|---|---|---|
+| ImageSubmission | 图片提交 | PostgreSQL |
+""",
+        encoding="utf-8",
+    )
+
+    context = build_derive_context(
+        parent_prd,
+        tmp_path / "architecture",
+        "Image Submission Component",
+        "component",
+    )
+
+    assert [req["id"] for req in context["related_requirements"]] == ["REQ-D001"]
+    assert [req["id"] for req in context["related_architecture_requirements"]] == ["REQ-A002"]
+    assert context["data_parent_refs"] == ["REQ-A002"]
+    assert any("REQ-A001" in gap and "not represented" in gap for gap in context["coverage_gaps"])
+    assert any("REQ-A003" in gap and "no child owner" in gap for gap in context["coverage_gaps"])
+    assert any("REQ-A004" in gap and "no child metric owner" in gap for gap in context["coverage_gaps"])
+    assert any("REQ-A005" in gap and "no child owner" in gap for gap in context["coverage_gaps"])
+
+
+def test_login_input_and_code_request_are_preserved_as_frontend_work(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-015] 系统应支持学生通过手机号和短信验证码登录。
+
+# Acceptance
+
+```gherkin
+Feature: 手机号验证码登录
+
+  @REQ-015
+  Scenario: 学生使用短信验证码登录
+    Given 学生在登录页输入手机号并请求短信验证码
+    When 学生连续 5 次输入错误验证码并提交登录
+    Then 系统创建认证会话
+```
+""",
+        encoding="utf-8",
+    )
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "02-module-partitioning.md").write_text(
+        """| Module | Included BC | Responsibility |
+|---|---|---|
+| **Identity Module** | User Identity BC | 手机号登录、短信验证码生命周期、认证会话 |
+""",
+        encoding="utf-8",
+    )
+
+    context = build_derive_context(
+        parent_prd,
+        architecture,
+        "Identity Module",
+        "deployable_module",
+    )
+
+    assert context["success"] is True
+    assert context["coverage_gaps"] == []
+    assert "frontend" in context["requirement_surfaces"]["REQ-015"]
+    assert "frontend" in context["implementation_surfaces"]
+
+
+def test_frontend_architecture_owner_inherits_linked_business_behavior(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-D001] 系统应拒绝超过 3 张图片的提交请求。
+  - parent_req: REQ-002
+  - implementation_surfaces: [frontend, api_backend, domain_logic]
+  - source_kind: parent_requirement
+- [REQ-A001] 模块必须提供学生端前端页面并完整实现 REQ-D001 的交互。
+  - parent_req: ARCH:03-runtime-architecture.md#Web App
+  - related_reqs: [REQ-D001]
+  - implementation_surfaces: [frontend]
+  - source_kind: architecture_frontend
+
+# Acceptance
+
+```gherkin
+Feature: 图片数量限制
+
+  @REQ-D001
+  Scenario: 第四张图片被阻止
+    Given 学生已选择 3 张图片
+    When 学生添加第 4 张图片
+    Then 前端不允许继续添加图片
+```
+""",
+        encoding="utf-8",
+    )
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "02-module-partitioning.md").write_text(
+        """| Component | Responsibility | Related Aggregate |
+|---|---|---|
+| **Student Web UI Component** | 学生端前端页面、浏览器交互与状态展示 | None |
+| **Image Policy Component** | 图片提交请求数量限制 | None |
+""",
+        encoding="utf-8",
+    )
+
+    context = build_derive_context(
+        parent_prd,
+        architecture,
+        "Student Web UI Component",
+        "component",
+    )
+
+    assert context["coverage_gaps"] == []
+    assert [req["id"] for req in context["related_requirements"]] == ["REQ-D001"]
+    assert [req["id"] for req in context["related_architecture_requirements"]] == ["REQ-A001"]
+    assert [scenario["scenario"] for scenario in context["related_scenarios"]] == ["第四张图片被阻止"]
+    assert context["artifact_parent_refs"]["frontend"] == ["REQ-A001"]
+
+
+def test_user_activity_in_given_does_not_create_false_frontend_scope(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """# Requirements
+
+### Must Have
+- [REQ-014] 系统应在 T + 30 天 + 1 分钟使原始图片和会话数据不可读取。
+
+# Acceptance
+
+```gherkin
+Feature: 数据删除
+
+  @REQ-014
+  Scenario: 保存期结束后数据不可读取
+    Given 学生已上传题目图片并完成一次答疑
+    When 当前时间到达 T + 30 天 + 1 分钟
+    Then 原始图片和会话数据不可读取
+```
+""",
+        encoding="utf-8",
+    )
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "02-module-partitioning.md").write_text(
+        """| Module | Included BC | Responsibility |
+|---|---|---|
+| **Compliance Module** | Compliance BC | 30 天保留策略、定时删除与审计 |
+""",
+        encoding="utf-8",
+    )
+
+    context = build_derive_context(
+        parent_prd,
+        architecture,
+        "Compliance Module",
+        "deployable_module",
+    )
+
+    assert "frontend" not in context["requirement_surfaces"]["REQ-014"]
+    assert "frontend" not in context["implementation_surfaces"]
