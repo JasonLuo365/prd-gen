@@ -1,8 +1,12 @@
-"""Acceptance criteria phase for PRD generation."""
+"""Acceptance-contract phase for PRD generation.
+
+This phase captures business oracles. It deliberately does not generate Gherkin;
+the downstream test-generation skill owns TC and Gherkin rendering.
+"""
 from typing import Any
 
 from prd_flow.phases.base import Phase
-from prd_flow.session import SessionState
+from prd_flow.quality.oracle import check_oracle_coverage, validate_acceptance_contract
 
 
 class AcceptancePhase(Phase):
@@ -12,127 +16,74 @@ class AcceptancePhase(Phase):
 
     @property
     def phase_name(self) -> str:
-        return "Acceptance"
-
-    def _split_when(self, text: str) -> tuple[str, list[str]]:
-        """Split operation text into when steps.
-
-        Splits by Chinese comma, English comma, or the word '并'.
-        Returns (first_step, [and_steps]).
-        """
-        # Try splitting by Chinese comma first, then English comma, then '并'
-        for sep in ("，", ",", "并"):
-            if sep in text:
-                parts = [p.strip() for p in text.split(sep) if p.strip()]
-                if len(parts) > 1:
-                    return parts[0], parts[1:]
-        return text, []
-
-    def _build_scenario_dict(
-        self,
-        feature: str,
-        scenario: str,
-        given: str,
-        when_text: str,
-        then: str,
-    ) -> dict:
-        """Build a scenario dict from guided inputs."""
-        when, and_steps = self._split_when(when_text)
-        data = {
-            "feature": feature,
-            "scenario": scenario,
-            "given": given,
-            "when": when,
-            "then": then,
-        }
-        if and_steps:
-            data["and_steps"] = and_steps
-        return data
-
-    def _preview_gherkin(self, scenario: dict) -> str:
-        """Generate a Gherkin preview string for a scenario."""
-        lines = [f"  Scenario: {scenario['scenario']}"]
-        lines.append(f"    Given {scenario['given']}")
-        lines.append(f"    When {scenario['when']}")
-        for step in scenario.get("and_steps", []):
-            lines.append(f"    And {step}")
-        lines.append(f"    Then {scenario['then']}")
-        return "\n".join(lines)
+        return "Acceptance Contracts"
 
     def run(self) -> dict[str, Any]:
-        """Interactive entry point using guided questioning."""
-        print("\n[Phase 4/5] Acceptance - 验收标准\n")
-
-        scenarios = []
+        """Collect explicit contract fields without synthesizing missing answers."""
+        print("\n[Acceptance Contracts] 输入 done 结束。\n")
+        contracts: list[dict] = []
         while True:
-            scenario_name = input("请描述一个场景名称：").strip()
-            if scenario_name.lower() == "done":
+            req_id = input("关联需求 ID：").strip()
+            if req_id.lower() == "done":
                 break
-
-            feature_input = input("Feature 名称（默认: 通用功能）：").strip()
-            feature = feature_input if feature_input else "通用功能"
-
-            given = input("用户当前处于什么状态？").strip()
-            when_text = input("用户做了什么操作？").strip()
-            then = input("系统应该有什么反应？").strip()
-
-            scenario = self._build_scenario_dict(
-                feature=feature,
-                scenario=scenario_name,
-                given=given,
-                when_text=when_text,
-                then=then,
-            )
-
-            print("\n系统自动转化为：")
-            print(self._preview_gherkin(scenario))
-            print()
-
-            confirm = input("是否确认？（y/n，直接输入修改内容则替换整行）：").strip()
-            if confirm.lower() in ("y", "yes", "是"):
-                scenarios.append(scenario)
-                print(f"已添加 {len(scenarios)} 个场景。\n")
-            elif confirm.lower() in ("n", "no", "否"):
-                print("已放弃此场景，请重新输入。\n")
-                continue
+            contract_type = input("类型（functional/nfr）：").strip().lower() or "functional"
+            contract_id = input("契约 ID：").strip() or f"AC-{len(contracts) + 1:03d}"
+            evidence_refs = [x.strip() for x in input("证据引用（逗号分隔）：").split(",") if x.strip()]
+            if contract_type == "nfr":
+                contract = {
+                    "id": contract_id,
+                    "type": "nfr",
+                    "verifies": [req_id],
+                    "release_scope": "current",
+                    "population": input("测量总体/样本：").strip(),
+                    "measurement_start": input("测量起点：").strip(),
+                    "measurement_end": input("测量终点：").strip(),
+                    "unit": input("单位：").strip(),
+                    "threshold": input("阈值：").strip(),
+                    "exclusions": [x.strip() for x in input("排除项（逗号分隔）：").split(",") if x.strip()],
+                    "pass_rule": input("通过规则：").strip(),
+                    "evidence_refs": evidence_refs,
+                }
             else:
-                # Treat as replacement for the When line
-                scenario["when"] = confirm
-                # Re-split in case the replacement also has commas
-                new_when, new_and_steps = self._split_when(confirm)
-                scenario["when"] = new_when
-                if new_and_steps:
-                    scenario["and_steps"] = new_and_steps
-                else:
-                    scenario.pop("and_steps", None)
-                scenarios.append(scenario)
-                print(f"已添加 {len(scenarios)} 个场景。\n")
+                contract = {
+                    "id": contract_id,
+                    "type": "functional",
+                    "verifies": [req_id],
+                    "release_scope": "current",
+                    "actor": input("参与者：").strip(),
+                    "preconditions": [x.strip() for x in input("前置条件（逗号分隔）：").split(",") if x.strip()],
+                    "trigger": input("触发动作：").strip(),
+                    "response": [x.strip() for x in input("系统响应（逗号分隔）：").split(",") if x.strip()],
+                    "observable_oracles": [x.strip() for x in input("可观察判定（逗号分隔）：").split(",") if x.strip()],
+                    "boundaries": [x.strip() for x in input("边界及对应响应（逗号分隔）：").split(",") if x.strip()],
+                    "exceptions": [x.strip() for x in input("异常及对应响应（逗号分隔）：").split(",") if x.strip()],
+                    "evidence_refs": evidence_refs,
+                }
+            issues = validate_acceptance_contract(contract)
+            if issues:
+                print("契约不完整，未保存：" + "; ".join(issues))
+                continue
+            contracts.append(contract)
+        return self.collect(contracts=contracts)
 
-        return self.collect(scenarios=scenarios)
-
-    def collect(
-        self,
-        scenarios: list[dict],
-    ) -> dict:
-        """Collect acceptance data programmatically."""
-        data = {"scenarios": scenarios}
+    def collect(self, contracts: list[dict]) -> dict:
+        data = {"contracts": contracts}
         self.update_state(data)
         return data
 
     def check_minimum_standard(self, data: dict[str, Any]) -> tuple[bool, str]:
-        """Check each Must-Have requirement has at least 1 Gherkin scenario."""
-        p3_data = self.state.draft_content.get("P3", {})
-        functional = p3_data.get("functional", [])
-        must_have_ids = {req["id"] for req in functional if req.get("priority") == "Must Have"}
-
-        if not must_have_ids:
-            return True, "无 Must-Have 需求，跳过 Gherkin 检查"
-
-        scenarios = data.get("scenarios", [])
-        covered_ids = {s["req_id"] for s in scenarios if s.get("req_id")}
-
-        uncovered = must_have_ids - covered_ids
-        if uncovered:
-            return False, f"以下 Must-Have 需求缺少 Gherkin 场景: {', '.join(sorted(uncovered))}"
-
-        return True, "Acceptance 最低标准已满足"
+        requirements = self.state.draft_content.get("P3", {})
+        contracts = data.get("contracts", [])
+        invalid = {
+            contract.get("id", "UNKNOWN"): validate_acceptance_contract(contract)
+            for contract in contracts
+            if validate_acceptance_contract(contract)
+        }
+        if invalid:
+            details = "; ".join(f"{key}: {', '.join(value)}" for key, value in invalid.items())
+            return False, f"Acceptance Contract 字段不完整：{details}"
+        gaps = check_oracle_coverage(requirements, contracts)
+        if gaps:
+            details = "; ".join(f"{gap['id']}: {gap['reason']}" for gap in gaps)
+            return False, f"当前版本需求缺少完整判定依据：{details}"
+        return True, "所有当前版本功能与 NFR 均有完整 Acceptance Contract"

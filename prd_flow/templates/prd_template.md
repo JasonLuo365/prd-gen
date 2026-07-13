@@ -1,56 +1,40 @@
 ---
-doc_id: "{{doc_id}}"
-version: "{{version}}"
-layer: "{{layer}}"
-parent_doc: {{parent_doc}}
-author: "{{author}}"
-status: "{{status}}"
-priority: "{{priority}}"
-created_at: "{{created_at}}"
-tags: {{tags}}
+doc_type: prd
+schema_version: "2.0"
+release_scope_frozen: {{release_scope_frozen}}
+ready_for_test_generation: {{ready_for_test_generation}}
+oracle_blocked_count: {{oracle_blocked_count}}
+review_method: independent_agent
 ---
 
 # Problem Statement
 
-## 目标用户
-{{target_users}}
-
-## 痛点描述
-{{pain_points}}
-
-## 机会窗口
-{{opportunity}}
-
----
+{{problem_statement}}
 
 # Requirements
 
-## 功能需求
-
-### Must Have
-{{must_have_reqs}}
-
-### Should Have
-{{should_have_reqs}}
-
-### Could Have
-{{could_have_reqs}}
-
-## 非功能需求
-{{non_functional_reqs}}
-
----
-
-# Acceptance
-
-```gherkin
-{{gherkin_scenarios}}
-```
-
----
+{{atomic_requirements}}
 
 # Success Metrics
 
-| 指标 | 目标值 | 测量方式 |
-|:---|:---|:---|
 {{success_metrics}}
+
+# Acceptance Contracts
+
+{{acceptance_contracts}}
+
+# Oracle Coverage Ledger
+
+{{oracle_coverage_ledger}}
+
+# Future Backlog / Documented Exclusions
+
+{{documented_exclusions}}
+
+# Risks, Dependencies, and Blocking Questions
+
+{{risks_dependencies_blockers}}
+
+# Agent Review Report
+
+{{agent_review_report}}

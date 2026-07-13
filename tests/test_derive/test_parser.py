@@ -260,3 +260,36 @@ def test_extract_module_from_invalid_yaml():
         assert result["available_modules"] == []
     finally:
         path.unlink()
+
+
+def test_parse_parent_prd_extracts_acceptance_contracts(tmp_path):
+    parent = tmp_path / "parent.md"
+    parent.write_text(
+        """# Requirements
+## Current Release — Functional Requirements
+### Must Have
+- [REQ-001] Rank Amazon products
+  - release_scope: current
+  - requirement_kind: atomic
+
+# Acceptance Contracts
+## AC-REQ-001-01
+- type: functional
+- verifies: [REQ-001]
+- release_scope: current
+- actor: shopper
+- preconditions: purchase history exists
+- trigger: asks for a recommendation
+- response: ranked Amazon products
+- observable_oracles: order is displayed
+- boundaries: no target-domain history -> cross-domain profile
+- exceptions: Amazon API unavailable -> failure is displayed
+- evidence_refs: owner-decision-1
+""",
+        encoding="utf-8",
+    )
+    parsed = parse_parent_prd(parent)
+    assert parsed["requirements"][0]["release_scope"] == "current"
+    assert parsed["requirements"][0]["requirement_kind"] == "atomic"
+    assert parsed["acceptance_contracts"][0]["verifies"] == ["REQ-001"]
+    assert parsed["acceptance_contracts"][0]["response"] == ["ranked Amazon products"]

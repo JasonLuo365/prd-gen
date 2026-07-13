@@ -1,110 +1,20 @@
 """Tests for prd_flow.derive.auto_fixer."""
 
-import pytest
-
 from prd_flow.derive.auto_fixer import (
     fix_vague_quantifiers,
     fix_measurable,
     fix_parent_req,
-    generate_interface_scenarios,
 )
 
 
 class TestFixVagueQuantifiers:
-    """Tests for fix_vague_quantifiers function."""
+    """Vague business language is never repaired by invention."""
 
-    def test_replaces_friendly(self):
-        req = {"id": "REQ-001", "text": "系统应友好提示用户"}
-        result = fix_vague_quantifiers(req)
-        assert "友好" not in result["text"]
-        assert "显示错误提示信息并附重试按钮" in result["text"]
-
-    def test_replaces_fast(self):
-        req = {"id": "REQ-002", "text": "系统应快速响应"}
-        result = fix_vague_quantifiers(req)
-        assert "快速" not in result["text"]
-        assert "按父 PRD 或架构包已定义的时限" in result["text"]
-        assert "200ms" not in result["text"]
-
-    def test_replaces_very_fast(self):
-        req = {"id": "REQ-003", "text": "系统应很快处理请求"}
-        result = fix_vague_quantifiers(req)
-        assert "很快" not in result["text"]
-        assert "按父 PRD 或架构包已定义的时限" in result["text"]
-        assert "200ms" not in result["text"]
-
-    def test_replaces_massive(self):
-        req = {"id": "REQ-004", "text": "系统应支持大量并发"}
-        result = fix_vague_quantifiers(req)
-        assert "大量" not in result["text"]
-        assert "按父 PRD 或架构包已定义的容量范围" in result["text"]
-        assert "10000" not in result["text"]
-
-    def test_replaces_efficient(self):
-        req = {"id": "REQ-005", "text": "系统应高效运行"}
-        result = fix_vague_quantifiers(req)
-        assert "高效" not in result["text"]
-        assert "按父 PRD 或架构包已定义的资源使用约束" in result["text"]
-        assert "80%" not in result["text"]
-
-    def test_replaces_enough(self):
-        req = {"id": "REQ-006", "text": "系统应提供足够容量"}
-        result = fix_vague_quantifiers(req)
-        assert "足够" not in result["text"]
-        assert "满足父 PRD 或架构包已定义的业务容量" in result["text"]
-
-    def test_replaces_appropriate(self):
-        req = {"id": "REQ-007", "text": "系统应采取适当措施"}
-        result = fix_vague_quantifiers(req)
-        assert "适当" not in result["text"]
-        assert "符合父 PRD 或架构包已定义的策略" in result["text"]
-
-    def test_replaces_reasonable(self):
-        req = {"id": "REQ-008", "text": "系统应做出合理判断"}
-        result = fix_vague_quantifiers(req)
-        assert "合理" not in result["text"]
-        assert "符合父 PRD 或架构包已定义的判定策略" in result["text"]
-
-    def test_no_vague_words_unchanged(self):
-        req = {"id": "REQ-009", "text": "系统应支持 OAuth2 登录"}
+    def test_vague_text_is_preserved_for_quality_gate(self):
+        req = {"id": "REQ-001", "text": "系统应快速且友好地处理大量请求"}
         result = fix_vague_quantifiers(req)
         assert result is req
-        assert result["text"] == "系统应支持 OAuth2 登录"
-
-    def test_multiple_vague_words_all_replaced(self):
-        req = {"id": "REQ-010", "text": "系统应快速且友好地处理大量请求"}
-        result = fix_vague_quantifiers(req)
-        assert "快速" not in result["text"]
-        assert "友好" not in result["text"]
-        assert "大量" not in result["text"]
-        assert "按父 PRD 或架构包已定义的时限" in result["text"]
-        assert "显示错误提示信息并附重试按钮" in result["text"]
-        assert "按父 PRD 或架构包已定义的容量范围" in result["text"]
-        assert "200ms" not in result["text"]
-        assert "10000" not in result["text"]
-
-    def test_returns_new_dict(self):
-        req = {"id": "REQ-011", "text": "系统应友好提示"}
-        result = fix_vague_quantifiers(req)
-        assert result is not req
-        assert result["id"] == "REQ-011"
-
-    def test_empty_text_unchanged(self):
-        req = {"id": "REQ-011b", "text": ""}
-        result = fix_vague_quantifiers(req)
-        assert result is req
-
-    def test_missing_text_key_unchanged(self):
-        req = {"id": "REQ-011c"}
-        result = fix_vague_quantifiers(req)
-        assert result is req
-
-    def test_preserves_other_keys(self):
-        req = {"id": "REQ-011d", "text": "系统应友好提示", "extra": "value"}
-        result = fix_vague_quantifiers(req)
-        assert result["extra"] == "value"
-        assert result["text"] != req["text"]
-
+        assert result["text"] == req["text"]
 
 class TestFixMeasurable:
     """Tests for fix_measurable function."""
@@ -255,130 +165,3 @@ class TestFixParentReq:
         ]
         result = fix_parent_req(req, parent_requirements)
         assert "parent_req" not in result
-
-
-class TestGenerateInterfaceScenarios:
-    """Tests for generate_interface_scenarios function."""
-
-    def _contract(self, name="createOrder", method="POST", path="/orders", error_codes=None):
-        return {
-            "name": name,
-            "method": method,
-            "path": path,
-            "request_fields": ["order_id"],
-            "response_fields": ["status"],
-            "error_codes": error_codes or ["400"],
-        }
-
-    def test_incomplete_acl_interface_does_not_generate_authoritative_scenarios(self):
-        interfaces = [
-            {"name": "SMS Gateway", "source": "06-interface-contracts.md", "method": "", "error_codes": []}
-        ]
-        scenarios = generate_interface_scenarios("Identity Module", interfaces)
-        assert scenarios == []
-
-    def test_contract_scenario_uses_declared_fields_and_error_code(self):
-        interfaces = [
-            {
-                "name": "Upload Image",
-                "method": "POST",
-                "path": "/api/v1/problems/images",
-                "request_fields": ["student_id", "images"],
-                "response_fields": ["image_upload_id", "validation_status"],
-                "error_codes": ["422"],
-            }
-        ]
-        scenarios = generate_interface_scenarios("Problem Intake Module", interfaces)
-        assert len(scenarios) == 2
-        assert "student_id" in scenarios[0]["when"]
-        assert "image_upload_id" in scenarios[0]["then"]
-        assert "422" in scenarios[1]["then"]
-        assert "400" not in scenarios[1]["then"]
-
-    def test_contract_without_declared_errors_generates_only_happy_path(self):
-        interface = self._contract(error_codes=[])
-        interface["error_codes"] = []
-
-        scenarios = generate_interface_scenarios("order_module", [interface])
-
-        assert len(scenarios) == 1
-        assert scenarios[0]["scenario"] == "createOrder 正常调用"
-
-    def test_one_interface_two_scenarios(self):
-        interfaces = [
-            self._contract(),
-        ]
-        scenarios = generate_interface_scenarios("order_module", interfaces)
-        assert len(scenarios) == 2
-
-    def test_happy_path_contains_response_fields(self):
-        interfaces = [
-            self._contract(),
-        ]
-        scenarios = generate_interface_scenarios("order_module", interfaces)
-        happy = scenarios[0]
-        assert "status" in happy["then"]
-        assert "正常调用" in happy["scenario"]
-
-    def test_error_path_contains_declared_error_code(self):
-        interfaces = [
-            self._contract(error_codes=["422"]),
-        ]
-        scenarios = generate_interface_scenarios("order_module", interfaces)
-        error = scenarios[1]
-        assert "422" in error["then"]
-        assert "参数非法" in error["scenario"]
-
-    def test_skip_non_dict_items(self):
-        interfaces = [
-            self._contract(),
-            "not a dict",
-            123,
-            None,
-        ]
-        scenarios = generate_interface_scenarios("order_module", interfaces)
-        assert len(scenarios) == 2
-
-    def test_default_values_for_missing_fields(self):
-        interfaces = [
-            {"method": "GET"},
-        ]
-        scenarios = generate_interface_scenarios("test_module", interfaces)
-        assert scenarios == []
-
-    def test_two_interfaces_four_scenarios(self):
-        interfaces = [
-            self._contract(),
-            self._contract(name="getOrder", method="GET", path="/orders/{id}", error_codes=["404"]),
-        ]
-        scenarios = generate_interface_scenarios("order_module", interfaces)
-        assert len(scenarios) == 4
-        scenarios_names = [s["scenario"] for s in scenarios]
-        assert "createOrder 正常调用" in scenarios_names
-        assert "createOrder 参数非法" in scenarios_names
-        assert "getOrder 正常调用" in scenarios_names
-        assert "getOrder 参数非法" in scenarios_names
-
-    def test_empty_interfaces_returns_empty(self):
-        scenarios = generate_interface_scenarios("order_module", [])
-        assert scenarios == []
-
-    def test_module_name_used_as_feature(self):
-        interfaces = [
-            self._contract(name="foo", method="GET", path="/bar", error_codes=["404"]),
-        ]
-        scenarios = generate_interface_scenarios("used_module", interfaces)
-        assert scenarios[0]["feature"] == "used_module"
-        assert scenarios[1]["feature"] == "used_module"
-
-    def test_interface_with_none_name_uses_unknown(self):
-        interfaces = [
-            {"name": None, "method": "GET", "path": "/bar", "request_fields": ["id"], "response_fields": ["body"], "error_codes": ["404"]},
-        ]
-        scenarios = generate_interface_scenarios("test", interfaces)
-        assert scenarios == []
-
-    def test_all_non_dict_items_skipped(self):
-        interfaces = ["a", 1, None, [], set()]
-        scenarios = generate_interface_scenarios("test", interfaces)
-        assert scenarios == []

@@ -4,38 +4,11 @@ __all__ = [
     "fix_vague_quantifiers",
     "fix_measurable",
     "fix_parent_req",
-    "generate_interface_scenarios",
 ]
 
-# Derive mode may clarify vague wording, but must not invent metrics or
-# thresholds that are absent from the parent PRD / architecture package.
-_VAGUE_REPLACEMENTS = {
-    "友好": "显示错误提示信息并附重试按钮",
-    "快速": "按父 PRD 或架构包已定义的时限",
-    "很快": "按父 PRD 或架构包已定义的时限",
-    "大量": "按父 PRD 或架构包已定义的容量范围",
-    "高效": "按父 PRD 或架构包已定义的资源使用约束",
-    "足够": "满足父 PRD 或架构包已定义的业务容量",
-    "适当": "符合父 PRD 或架构包已定义的策略",
-    "合理": "符合父 PRD 或架构包已定义的判定策略",
-}
-
-
 def fix_vague_quantifiers(req: dict) -> dict:
-    """Replace vague words without adding unauthorized numeric commitments."""
-    text = req.get("text", "")
-    new_text = text
-    changed = False
-
-    for vague, replacement in _VAGUE_REPLACEMENTS.items():
-        if vague in new_text:
-            new_text = new_text.replace(vague, replacement)
-            changed = True
-
-    if not changed:
-        return req
-
-    return {**req, "text": new_text}
+    """Do not repair vague business language without an explicit source oracle."""
+    return req
 
 
 def fix_measurable(req: dict) -> dict:
@@ -80,48 +53,3 @@ def fix_parent_req(req: dict, parent_requirements: list[dict]) -> dict:
         return {**req, "parent_req": best_parent_id}
 
     return req
-
-
-def generate_interface_scenarios(module_name: str, interfaces: list[dict]) -> list[dict]:
-    """Generate Gherkin scenarios only from complete interface contracts."""
-    scenarios = []
-
-    for iface in interfaces:
-        if not isinstance(iface, dict):
-            continue
-
-        name = iface.get("name")
-        method = iface.get("method")
-        path = iface.get("path")
-        request_fields = iface.get("request_fields") or []
-        response_fields = iface.get("response_fields") or []
-        error_codes = iface.get("error_codes") or []
-        if not name or not method or not request_fields or not response_fields:
-            continue
-
-        operation = f"{method} {path}" if path else str(method)
-        request_summary = ", ".join(request_fields)
-        response_summary = ", ".join(response_fields)
-
-        scenarios.append(
-            {
-                "feature": module_name,
-                "scenario": f"{name} 正常调用",
-                "given": f"模块 {module_name} 正常运行，接口契约 {name} 已按架构包定义",
-                "when": f"调用 {operation} 且参数包含 {request_summary}",
-                "then": f"响应体包含 {response_summary} 并符合 {name} 接口契约",
-            }
-        )
-        if error_codes:
-            error_summary = ", ".join(error_codes)
-            scenarios.append(
-                {
-                    "feature": module_name,
-                    "scenario": f"{name} 参数非法",
-                    "given": f"模块 {module_name} 正常运行",
-                    "when": f"调用 {operation} 且缺失或错误提供 {request_summary}",
-                    "then": f"返回架构包已定义的错误码 {error_summary}",
-                }
-            )
-
-    return scenarios

@@ -93,7 +93,7 @@ def parse_parent_prd(path: Path) -> dict:
             continue
 
         metadata_match = re.match(
-            r"-\s+(parent_req|parent_nfr|source_kind|implementation_surfaces|related_reqs):\s*(.+)$",
+            r"-\s+(parent_req|parent_nfr|source_kind|implementation_surfaces|related_reqs|release_scope|requirement_kind|scope_reason):\s*(.+)$",
             stripped,
         )
         if last_requirement is not None and line[:1].isspace() and metadata_match:
@@ -113,11 +113,47 @@ def parse_parent_prd(path: Path) -> dict:
         "frontmatter": frontmatter,
         "requirements": requirements,
         "non_functional": non_functional,
+        "acceptance_contracts": _parse_acceptance_contracts(content),
+        # Legacy input remains readable, but new output never emits Gherkin here.
         "acceptance_scenarios": _parse_gherkin_scenarios(content),
         "success_metrics": _parse_success_metrics(content),
         "non_goals": _parse_non_goals(content),
         "raw_content": content,
     }
+
+
+def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
+    """Parse the explicit Acceptance Contracts Markdown section."""
+    heading = re.search(r"^#\s+Acceptance Contracts\s*$", content, re.MULTILINE | re.IGNORECASE)
+    if not heading:
+        return []
+    next_section = re.search(r"^#\s+", content[heading.end():], re.MULTILINE)
+    end = heading.end() + next_section.start() if next_section else len(content)
+    section = content[heading.end():end]
+    contracts: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    list_fields = {"verifies", "preconditions", "response", "observable_oracles", "boundaries", "exceptions", "exclusions", "evidence_refs"}
+    for raw_line in section.splitlines():
+        stripped = raw_line.strip()
+        contract_match = re.match(r"^##\s+((?:AC|NFR-AC)-[A-Z0-9-]+)\s*$", stripped, re.IGNORECASE)
+        if contract_match:
+            if current:
+                contracts.append(current)
+            current = {"id": contract_match.group(1).upper()}
+            continue
+        field_match = re.match(r"^-\s+([a-z_]+):\s*(.*)$", stripped)
+        if current is None or not field_match:
+            continue
+        key, value = field_match.group(1), field_match.group(2).strip()
+        if key in list_fields:
+            value = value.strip("[]")
+            separator = "|" if "|" in value else ","
+            current[key] = [item.strip() for item in value.split(separator) if item.strip()]
+        else:
+            current[key] = value
+    if current:
+        contracts.append(current)
+    return contracts
 
 
 def _parse_gherkin_scenarios(content: str) -> list[dict[str, Any]]:
