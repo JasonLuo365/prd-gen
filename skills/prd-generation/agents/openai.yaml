@@ -1,4 +1,4 @@
 interface:
   display_name: "PRD Generation"
-  short_description: "Generate layered PRDs with root and derive modes."
-  default_prompt: "Help me create a layered PRD."
+  short_description: "Generate oracle-ready PRDs for downstream test generation."
+  default_prompt: "Create an atomic, oracle-complete PRD, close all blocking product decisions before handoff, and do not generate test cases or Gherkin."

@@ -40,6 +40,7 @@ def build_derive_context(
             "related_success_metrics": [],
             "non_goals": [],
             "related_scenarios": [],
+            "related_acceptance_contracts": [],
             "interfaces": [],
             "events": [],
             "metric_contracts": [],
@@ -98,6 +99,7 @@ def build_derive_context(
     ]
     non_goals = parent_prd.get("non_goals", [])
     acceptance_scenarios = parent_prd.get("acceptance_scenarios", [])
+    acceptance_contracts = parent_prd.get("acceptance_contracts", [])
     requirement_owners = _build_ownership_map(
         business_requirements + all_non_functional,
         units,
@@ -200,6 +202,15 @@ def build_derive_context(
         for scenario in acceptance_scenarios
         if related_ids.intersection(scenario.get("requirement_ids", []))
     ]
+    related_acceptance_contracts = [
+        contract
+        for contract in acceptance_contracts
+        if related_ids.intersection(
+            contract.get("verifies", [])
+            if isinstance(contract.get("verifies", []), list)
+            else [contract.get("verifies")]
+        )
+    ]
 
     coverage_gaps = list(catalog.get("architecture_coverage_gaps", []))
     coverage_gaps.extend(architecture_parent_gaps)
@@ -270,6 +281,7 @@ def build_derive_context(
         "related_success_metrics": related_success_metrics,
         "non_goals": non_goals,
         "related_scenarios": related_scenarios,
+        "related_acceptance_contracts": related_acceptance_contracts,
         "orphan_requirements": orphan_requirements,
         "uncovered_architecture_requirements": uncovered_architecture_requirements,
         "untraced_scenarios": untraced_scenarios,

@@ -1,27 +1,13 @@
-"""Generate fix suggestions for SMART-REQ failures."""
+"""Generate source-safe fix suggestions for SMART-REQ failures."""
 from prd_flow.quality.smart_req import SMARTResult
 
 
-# Vague words list (mirrored from smart_req.py for suggestion generation)
-_VAGUE_WORDS = ["很快", "良好", "友好", "高效", "快速", "足够", "适当", "合理"]
-
-
 def suggest_fix(req: dict, smart_result: SMARTResult) -> str:
-    """根据 SMART-REQ 失败项生成修正建议。"""
-    suggestions = []
-
+    suggestions: list[str] = []
     if not smart_result.specific:
-        text = req.get("text", "")
-        found = [vw for vw in _VAGUE_WORDS if vw in text]
-        if found:
-            suggestions.append(f"建议替换模糊量词({', '.join(found)})为具体指标")
-        else:
-            suggestions.append("建议避免使用模糊描述，使用精确的术语")
-
+        suggestions.append("将模糊描述改为明确条件、对象和约束")
     if not smart_result.measurable:
-        suggestions.append("建议补充父 PRD 或架构包已授权的指标，或明确可观察的通过/失败结果")
-
+        suggestions.append("补充来源已授权的量化指标或可观察通过/失败结果")
     if not smart_result.testable:
-        suggestions.append("建议补充至少1个Gherkin场景，格式：Given...When...Then...")
-
-    return "；".join(suggestions) if suggestions else "需求符合规范，无需修改"
+        suggestions.append("补充完整 Acceptance Contract；不要由 Agent 猜测业务响应")
+    return "；".join(suggestions) if suggestions else "需求符合规范"

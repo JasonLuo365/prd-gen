@@ -1,96 +1,31 @@
-from unittest.mock import patch
-
 from prd_flow.phases.acceptance import AcceptancePhase
 from prd_flow.session import SessionState
 
 
-def test_acceptance_phase_collects_data():
-    state = SessionState(
-        session_id="sess_001",
-        mode="root",
-        current_phase="P4",
-        completed_phases=[],
-        draft_content={},
-    )
-    phase = AcceptancePhase(state)
-
-    result = phase.collect(
-        scenarios=[
-            {
-                "feature": "用户注册",
-                "scenario": "通过邮箱成功注册",
-                "given": "用户访问注册页面",
-                "when": "用户输入有效邮箱和密码",
-                "then": "账户创建成功",
-            },
-        ],
-    )
-
-    assert len(result["scenarios"]) == 1
-    assert result["scenarios"][0]["feature"] == "用户注册"
-    assert result["scenarios"][0]["given"] == "用户访问注册页面"
-    assert state.draft_content["P4"] == result
-    assert "P4" in state.completed_phases
+def state():
+    return SessionState(session_id="test", mode="root", current_phase="P4", completed_phases=[], draft_content={
+        "P3": {"functional": [{"id": "REQ-001", "priority": "Should Have", "release_scope": "current"}], "non_functional": []}
+    })
 
 
-def test_acceptance_phase_run_interactive():
-    state = SessionState(
-        session_id="sess_001",
-        mode="root",
-        current_phase="P4",
-        completed_phases=[],
-        draft_content={},
-    )
-    phase = AcceptancePhase(state)
-
-    # New guided flow inputs:
-    # scenario name, feature name (default), given, when, then, confirm, done
-    inputs = [
-        "用户成功注册", "",  # scenario name, feature default
-        "用户未登录且访问注册页面",  # given
-        "输入有效邮箱和密码",  # when (no comma)
-        "创建未验证账户并发送验证邮件",  # then
-        "y",  # confirm
-        "done",  # done
-    ]
-    with patch("builtins.input", side_effect=inputs):
-        result = phase.run()
-
-    assert len(result["scenarios"]) == 1
-    assert result["scenarios"][0]["feature"] == "通用功能"
-    assert result["scenarios"][0]["scenario"] == "用户成功注册"
-    assert result["scenarios"][0]["given"] == "用户未登录且访问注册页面"
-    assert result["scenarios"][0]["when"] == "输入有效邮箱和密码"
-    assert result["scenarios"][0]["then"] == "创建未验证账户并发送验证邮件"
-    assert "and_steps" not in result["scenarios"][0]
+def contract():
+    return {"id": "AC-001", "type": "functional", "verifies": ["REQ-001"], "release_scope": "current", "actor": "user", "preconditions": ["signed in"], "trigger": "submits query", "response": ["ranked products"], "observable_oracles": ["order displayed"], "boundaries": ["empty target history -> cross-domain profile"], "exceptions": ["API unavailable -> failure displayed"], "evidence_refs": ["owner-1"]}
 
 
-def test_acceptance_phase_run_interactive_with_and_steps():
-    state = SessionState(
-        session_id="sess_001",
-        mode="root",
-        current_phase="P4",
-        completed_phases=[],
-        draft_content={},
-    )
-    phase = AcceptancePhase(state)
+def test_acceptance_phase_collects_contracts():
+    phase = AcceptancePhase(state())
+    result = phase.collect([contract()])
+    assert result == {"contracts": [contract()]}
 
-    # Guided flow with comma-separated operation
-    inputs = [
-        "用户成功注册", "用户注册",  # scenario name, feature name
-        "用户未登录且访问注册页面",  # given
-        "输入有效邮箱和密码，点击注册按钮",  # when (with comma)
-        "创建未验证账户并发送验证邮件",  # then
-        "y",  # confirm
-        "done",  # done
-    ]
-    with patch("builtins.input", side_effect=inputs):
-        result = phase.run()
 
-    assert len(result["scenarios"]) == 1
-    assert result["scenarios"][0]["feature"] == "用户注册"
-    assert result["scenarios"][0]["scenario"] == "用户成功注册"
-    assert result["scenarios"][0]["given"] == "用户未登录且访问注册页面"
-    assert result["scenarios"][0]["when"] == "输入有效邮箱和密码"
-    assert result["scenarios"][0]["and_steps"] == ["点击注册按钮"]
-    assert result["scenarios"][0]["then"] == "创建未验证账户并发送验证邮件"
+def test_acceptance_phase_requires_all_current_priorities():
+    phase = AcceptancePhase(state())
+    met, message = phase.check_minimum_standard({"contracts": []})
+    assert not met
+    assert "REQ-001" in message
+
+
+def test_acceptance_phase_passes_complete_contract():
+    phase = AcceptancePhase(state())
+    met, _ = phase.check_minimum_standard({"contracts": [contract()]})
+    assert met

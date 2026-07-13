@@ -18,6 +18,7 @@ from prd_flow.phases.success_metrics import SuccessMetricsPhase
 from prd_flow.quality.ambiguity import scan_ambiguity
 from prd_flow.quality.reporter import format_quality_report
 from prd_flow.quality.smart_req import check_smart_req
+from prd_flow.quality.oracle import check_oracle_coverage
 from prd_flow.quality.suggest import suggest_fix
 from prd_flow.derive.context_builder import build_derive_context
 from prd_flow.derive.decision_rules import find_best_module_match
@@ -25,7 +26,6 @@ from prd_flow.derive.auto_fixer import (
     fix_vague_quantifiers,
     fix_measurable,
     fix_parent_req,
-    generate_interface_scenarios,
 )
 from prd_flow.derive.quality_gates import (
     check_derive_scope_budget,
@@ -41,7 +41,8 @@ EXIT_QUALITY_BLOCKED = 2
 def _run_smart_check(state: SessionState) -> list:
     """对P3的功能需求运行SMART-REQ检查。"""
     functional = state.draft_content.get("P3", {}).get("functional", [])
-    return [check_smart_req(req) for req in functional]
+    contracts = state.draft_content.get("P4", {}).get("contracts")
+    return [check_smart_req(req, contracts) for req in functional]
 
 
 def _authoritative_derive_requirements(requirements: list[dict]) -> list[dict]:
@@ -49,32 +50,12 @@ def _authoritative_derive_requirements(requirements: list[dict]) -> list[dict]:
     return list(requirements)
 
 
-def _check_gherkin_coverage(state: SessionState) -> list[dict]:
-    """检查每条 Must-Have 需求是否至少对应一个 Gherkin 场景。
-
-    Returns: 缺少场景覆盖的 Must-Have 需求列表
-    """
-    functional = state.draft_content.get("P3", {}).get("functional", [])
-    scenarios = state.draft_content.get("P4", {}).get("scenarios", [])
-    must_have = [r for r in functional if r.get("priority") == "Must Have"]
-
-    uncovered = []
-    for req in must_have:
-        req_id = req.get("id", "")
-        # Check if any scenario references this requirement
-        has_coverage = False
-        for s in scenarios:
-            scenario_text = f"{s.get('feature', '')} {s.get('scenario', '')}"
-            if req_id in scenario_text:
-                has_coverage = True
-                break
-        # Also check gherkin_count as fallback
-        if not has_coverage and req.get("gherkin_count", 0) >= 1:
-            has_coverage = True
-        if not has_coverage:
-            uncovered.append(req)
-
-    return uncovered
+def _check_oracle_coverage(state: SessionState) -> list[dict]:
+    """Return current-scope functional and NFR clauses without complete oracles."""
+    return check_oracle_coverage(
+        state.draft_content.get("P3", {}),
+        state.draft_content.get("P4", {}).get("contracts", []),
+    )
 
 
 def _run_ambiguity_check(state: SessionState, prd_text: str) -> dict:
@@ -120,8 +101,8 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
         ("P1", FrontmatterPhase),
         ("P2", ProblemStatementPhase),
         ("P3", RequirementsPhase),
-        ("P4", AcceptancePhase),
         ("P5", SuccessMetricsPhase),
+        ("P4", AcceptancePhase),
     ]
 
     for phase_id, PhaseClass in phase_order:
@@ -138,8 +119,8 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
                 functional = data.get("functional", [])
                 print(f"[{phase_id}] 已完成 - 功能需求: {len(functional)} 条")
             elif phase_id == "P4":
-                scenarios = data.get("scenarios", [])
-                print(f"[{phase_id}] 已完成 - 验收场景: {len(scenarios)} 个")
+                contracts = data.get("contracts", [])
+                print(f"[{phase_id}] 已完成 - Acceptance Contracts: {len(contracts)} 个")
             elif phase_id == "P5":
                 metrics = data.get("metrics", [])
                 print(f"[{phase_id}] 已完成 - 成功指标: {len(metrics)} 个")
@@ -151,6 +132,13 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
             print(f"[{phase_id}] 未完成，继续执行...")
             phase = PhaseClass(state)
             phase.run()
+
+    oracle_gaps = _check_oracle_coverage(state)
+    if oracle_gaps:
+        errors = [f"[{gap['id']}] {gap['reason']}" for gap in oracle_gaps]
+        _write_error_report(state, errors, args)
+        print("[ERROR] 当前版本需求存在缺失判定依据，PRD 未进入 ready 状态。")
+        return EXIT_QUALITY_BLOCKED
 
     # Final assembly
     prd_text = assemble_prd(state.draft_content)
@@ -172,13 +160,6 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
         if not _ask_continue("是否继续生成PRD"):
             print("已取消。可重新运行工具修正需求。")
             return
-
-    # Check Gherkin coverage
-    coverage_gaps = _check_gherkin_coverage(state)
-    if coverage_gaps:
-        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
-        for req in coverage_gaps:
-            print(f"    - {req.get('id', '')}: {req.get('text', '')[:50]}")
 
     # Final quality gate (ambiguity scan)
     ambiguity = _run_ambiguity_check(state, prd_text)
@@ -253,20 +234,20 @@ def run_root_mode(args: argparse.Namespace) -> None:
             print("已取消。可重新运行工具修正需求。")
             return
 
-    # Check Gherkin coverage
-    coverage_gaps = _check_gherkin_coverage(state)
-    if coverage_gaps:
-        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景")
-        for req in coverage_gaps:
-            print(f"    - {req.get('id', '')}: {req.get('text', '')[:50]}")
+    # Define metrics before the acceptance contracts that verify them.
+    phase5 = SuccessMetricsPhase(state)
+    phase5.run()
 
-    # Phase 4: Acceptance
+    # Phase 4 stores business oracles for downstream test generation.
     phase4 = AcceptancePhase(state)
     phase4.run()
 
-    # Phase 5: Success Metrics
-    phase5 = SuccessMetricsPhase(state)
-    phase5.run()
+    coverage_gaps = _check_oracle_coverage(state)
+    if coverage_gaps:
+        errors = [f"[{gap['id']}] {gap['reason']}" for gap in coverage_gaps]
+        _write_error_report(state, errors, args)
+        print("\n[ERROR] 当前版本需求存在缺失判定依据，PRD 未进入 ready 状态。")
+        return EXIT_QUALITY_BLOCKED
 
     # Final assembly
     prd_text = assemble_prd(state.draft_content)
@@ -354,7 +335,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     events = context.get("events", [])
     external_dependencies = context.get("external_dependencies", [])
     data_assets = context.get("data_assets", [])
-    related_scenarios = context.get("related_scenarios", [])
+    related_acceptance_contracts = context.get("related_acceptance_contracts", [])
     implementation_surfaces = context.get("implementation_surfaces", [])
 
     # 4. Keep a transparent parent-coverage ledger without blocking this target.
@@ -467,16 +448,12 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         parent_priority = req.get("priority", "Must Have")
         child_id = f"REQ-D{index:03d}"
         parent_to_child[req_id] = child_id
-        inherited_scenario_count = sum(
-            1
-            for scenario in related_scenarios
-            if req_id in scenario.get("requirement_ids", [])
-        )
         child_req = {
             "id": child_id,
             "text": f"{module_name} 应在自身职责边界内满足父需求：{req_text}",
             "priority": parent_priority,
-            "gherkin_count": max(inherited_scenario_count, 1 if parent_priority == "Must Have" else 0),
+            "release_scope": req.get("release_scope", "current"),
+            "requirement_kind": "atomic",
             "parent_req": req_id,
             "source_kind": "parent_requirement",
             "implementation_surfaces": context.get("requirement_surfaces", {}).get(
@@ -531,7 +508,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "不得以 API 实现或后端测试替代。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_frontend_refs)
                     if parent_frontend_refs
@@ -571,7 +547,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     f"输入字段为 {request_fields}；输出字段为 {response_fields}{error_clause}。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_interface_refs)
                     if parent_interface_refs
@@ -598,7 +573,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "实体和必需字段提供版本化持久化结构与数据库迁移，并验证迁移可在受支持的空数据库上完整创建所需结构。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_data_refs)
                     if parent_data_refs
@@ -630,7 +604,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     f"副作用为 {event.get('side_effects', 'None')}。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_event_refs)
                     if parent_event_refs
@@ -661,7 +634,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "封装调用、失败处理和领域边界，禁止把适配器实现视为外部团队自动提供。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_adapter_refs)
                     if parent_adapter_refs
@@ -687,7 +659,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "并记录可验证的成功、失败与重试结果。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_worker_refs)
                     if parent_worker_refs
@@ -713,7 +684,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "并验证模块在父架构部署拓扑中可启动且已声明契约可达；父层 wiring 不得被当作无需实现。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_runtime_refs)
                     if parent_runtime_refs
@@ -764,7 +734,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     "证据的统计口径、起止点和排除条件必须沿用父级定义。"
                 ),
                 "priority": "Must Have",
-                "gherkin_count": 1,
                 "parent_req": (
                     ", ".join(parent_observability_refs)
                     if parent_observability_refs
@@ -799,7 +768,6 @@ def run_derive_mode(args: argparse.Namespace) -> int:
                     f"{_clean_req_text(parent_arch_req.get('text', ''))}"
                 ),
                 "priority": parent_arch_req.get("priority", "Must Have"),
-                "gherkin_count": 1,
                 "parent_req": parent_id,
                 "source_kind": source_kind,
                 "implementation_surfaces": parent_arch_req.get(
@@ -868,275 +836,62 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         else:
             print("[OK] 自动修复后所有检查通过。")
 
-    # Check Gherkin coverage — auto-fill for uncovered Must-Have
-    coverage_gaps = _check_gherkin_coverage(state)
-    if coverage_gaps:
-        print(f"\n[WARNING]  Gherkin 覆盖缺口: {len(coverage_gaps)} 条 Must-Have 需求缺少对应场景，自动生成基础场景...")
-        existing_scenarios = state.draft_content.get("P4", {}).get("scenarios", [])
-        for req in coverage_gaps:
-            req_id = req.get("id", "")
-            req_text = req.get("text", "")
-            existing_scenarios.append({
-                "feature": module_name,
-                "scenario": f"{req_id} 基础验证",
-                "given": f"模块 {module_name} 正常运行",
-                "when": f"执行 {req_text}",
-                "then": "返回预期的成功响应",
-            })
-        if "P4" not in state.draft_content:
-            state.draft_content["P4"] = {}
-        state.draft_content["P4"]["scenarios"] = existing_scenarios
-        # Update gherkin_count only on requirements that were in coverage gaps
-        gap_ids = {req.get("id", "") for req in coverage_gaps}
-        for req in functional:
-            if req.get("id", "") in gap_ids:
-                req["gherkin_count"] = req.get("gherkin_count", 0) + 1
-
-    # D4: Acceptance — preserve parent behavior, then add architecture verification.
+    # D4: preserve explicit parent Acceptance Contracts only.
     phase4 = AcceptancePhase(state)
-    scenarios: list[dict] = []
-    inherited_parent_ids: set[str] = set()
-    for parent_scenario in related_scenarios:
-        mapped_tags = []
-        for parent_id in parent_scenario.get("requirement_ids", []):
-            child_id = (
-                parent_to_child.get(parent_id)
-                or parent_nfr_to_child.get(parent_id)
-                or parent_arch_to_child.get(parent_id)
-            )
-            if child_id and child_id not in mapped_tags:
-                mapped_tags.append(child_id)
-                inherited_parent_ids.add(parent_id)
-        if not mapped_tags:
-            continue
-        inherited = {
-            "feature": parent_scenario.get("feature", module_name),
-            "scenario": parent_scenario.get("scenario", "父级验收场景"),
-            "steps": [dict(step) for step in parent_scenario.get("steps", [])],
-            "tags": mapped_tags,
-        }
-        functional_tag = next((tag for tag in mapped_tags if tag.startswith("REQ-")), None)
-        if functional_tag:
-            inherited["req_id"] = functional_tag
-        scenarios.append(inherited)
-
-    for req in authoritative_requirements:
-        parent_id = req.get("id", "")
-        if req.get("priority", "Must Have") != "Must Have" or parent_id in inherited_parent_ids:
-            continue
-        child_id = parent_to_child[parent_id]
-        scenarios.append(
-            {
-                "feature": module_name,
-                "scenario": f"{child_id} 覆盖父需求 {parent_id}",
-                "given": f"{module_name} 已按上层架构边界运行",
-                "when": f"执行父需求 {parent_id} 定义的行为",
-                "then": f"完整保留父需求 {parent_id} 的可观察结果",
-                "req_id": child_id,
-                "tags": [child_id],
-            }
-        )
-
-    for interface in actionable_interfaces:
-        interface_id = str(interface.get("contract_id") or interface.get("name") or interface.get("path"))
-        derived_req_id = interface_req_ids[interface_id]
-        for scenario in generate_interface_scenarios(module_name, [interface]):
-            scenario["req_id"] = derived_req_id
-            scenario["tags"] = [derived_req_id]
-            scenarios.append(scenario)
-
-    if frontend_requirement_id:
-        scenarios.append(
-            {
-                "feature": f"{module_name} 学生端前端",
-                "scenario": f"{frontend_requirement_id} 完整实现父级前端交互",
-                "given": "父级验收场景和 Web App 到公开接口的契约已经定义",
-                "when": f"学生在浏览器中执行 {', '.join(frontend_related_reqs)} 对应的输入、点击、选择、上传或重试行为",
-                "then": "前端呈现全部声明的控件、状态、禁用规则、结果和错误提示，并由 UI 级测试验证，不以 API 响应代替界面行为",
-                "req_id": frontend_requirement_id,
-                "tags": [frontend_requirement_id],
-            }
-        )
-
-    for event in events:
-        event_key = str(event.get("contract_id") or event.get("event_name"))
-        derived_req_id = event_req_ids[event_key]
-        fields = ", ".join(event.get("required_fields", []))
-        scenarios.append(
-            {
-                "feature": f"{module_name} 事件契约",
-                "scenario": f"{derived_req_id} 处理事件 {event.get('event_name', event_key)}",
-                "given": f"事件触发条件满足且发布者为 {event.get('publisher', 'UNKNOWN')}",
-                "when": f"{module_name} 发布或消费事件 {event.get('event_name', event_key)}",
-                "then": f"事件载荷包含 {fields} 并执行架构声明的副作用",
-                "req_id": derived_req_id,
-                "tags": [derived_req_id],
-            }
-        )
-
-    for dependency in external_dependencies:
-        dependency_name = str(dependency.get("name", "UNKNOWN"))
-        normalized_dependency = "".join(ch.lower() for ch in dependency_name if ch.isalnum())
-        derived_req_id = adapter_req_ids[normalized_dependency]
-        scenarios.append(
-            {
-                "feature": f"{module_name} 外部适配器",
-                "scenario": f"{derived_req_id} 通过适配器调用 {dependency_name}",
-                "given": f"{module_name} 需要使用外部依赖 {dependency_name}",
-                "when": f"模块发起 {dependency_name} 调用",
-                "then": "调用仅通过模块拥有的适配器完成，并记录成功或失败结果",
-                "req_id": derived_req_id,
-                "tags": [derived_req_id],
-            }
-        )
-
-    if worker_requirement_id:
-        scenarios.append(
-            {
-                "feature": f"{module_name} Worker",
-                "scenario": f"{worker_requirement_id} 执行调度作业",
-                "given": "父架构定义的调度触发条件已经满足",
-                "when": f"{module_name} Worker 执行该模块拥有的作业",
-                "then": "作业产生可验证的成功或失败结果，并按声明记录重试状态",
-                "req_id": worker_requirement_id,
-                "tags": [worker_requirement_id],
-            }
-        )
-
-    if runtime_requirement_id:
-        scenarios.append(
-            {
-                "feature": f"{module_name} 运行时集成",
-                "scenario": f"{runtime_requirement_id} 接入父层部署拓扑",
-                "given": "父层运行时、配置与依赖连接点可用",
-                "when": f"装配并启动 {module_name}",
-                "then": "模块公开入口可达且已声明接口、事件和依赖连接能够完成集成验证",
-                "req_id": runtime_requirement_id,
-                "tags": [runtime_requirement_id],
-            }
-        )
-
-    if observability_requirement_id:
-        metric_name_parts = [
-            metric.get("name", metric.get("id", "metric"))
-            for metric in related_success_metrics
+    derived_contracts: list[dict] = []
+    for parent_contract in related_acceptance_contracts:
+        verifies = parent_contract.get("verifies", [])
+        if isinstance(verifies, str):
+            verifies = [verifies]
+        mapped = [
+            parent_to_child.get(parent_id)
+            or parent_nfr_to_child.get(parent_id)
+            or parent_arch_to_child.get(parent_id)
+            for parent_id in verifies
         ]
-        metric_name_parts.extend(nfr.get("id", "NFR") for nfr in observable_nfrs)
-        metric_names = ", ".join(metric_name_parts)
-        scenarios.append(
-            {
-                "feature": f"{module_name} 可观测性",
-                "scenario": f"{observability_requirement_id} 产出成功指标证据",
-                "given": "父级成功指标的统计口径、起止点和排除条件已定义",
-                "when": f"{module_name} 执行与 {metric_names} 相关的业务行为",
-                "then": "系统记录足以按父级方法计算指标结果的观测证据",
-                "req_id": observability_requirement_id,
-                "tags": [observability_requirement_id],
-            }
-        )
-
-    for parent_id, child_id in inherited_architecture_req_ids.items():
-        if parent_id in inherited_parent_ids:
+        mapped = [item for item in mapped if item]
+        if not mapped:
             continue
-        scenarios.append(
-            {
-                "feature": f"{module_name} 架构义务",
-                "scenario": f"{child_id} 继承父级架构义务 {parent_id}",
-                "given": f"父级架构义务 {parent_id} 已生效",
-                "when": f"{module_name} 执行对应架构行为",
-                "then": f"完整保留父级架构义务 {parent_id} 的可观察结果",
-                "req_id": child_id,
-                "tags": [child_id],
-            }
-        )
+        contract = dict(parent_contract)
+        contract["id"] = f"D-{parent_contract.get('id', 'AC-UNKNOWN')}"
+        contract["verifies"] = mapped
+        evidence = parent_contract.get("evidence_refs", [])
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        contract["evidence_refs"] = list(dict.fromkeys([
+            *evidence,
+            f"parent_acceptance_contract:{parent_contract.get('id', 'UNKNOWN')}",
+        ]))
+        derived_contracts.append(contract)
+    phase4.collect(contracts=derived_contracts)
 
-    if data_requirement_id:
-        asset_names = ", ".join(asset.get("name", "UNKNOWN") for asset in data_assets)
-        scenarios.append(
-            {
-                "feature": f"{module_name} 数据迁移",
-                "scenario": f"{data_requirement_id} 创建父架构数据结构",
-                "given": "受支持的数据库为空且父架构数据模型可用",
-                "when": f"应用 {module_name} 的版本化数据库迁移",
-                "then": f"成功创建 {asset_names} 及其全部已声明实体和必需字段所需的持久化结构且迁移报告无错误",
-                "req_id": data_requirement_id,
-                "tags": [data_requirement_id],
-            }
-        )
-
-    # Also include any auto-generated coverage scenarios
-    if "P4" in state.draft_content and state.draft_content["P4"].get("scenarios"):
-        scenarios = state.draft_content["P4"]["scenarios"] + scenarios
-    phase4.collect(scenarios=scenarios)
-
-    # D5: Success Metrics — keep derive metrics small and focused
+    # D5: preserve source-defined metrics. NFR contracts carry authoritative
+    # population/window/unit/threshold/exclusion/pass-rule definitions.
     phase5 = SuccessMetricsPhase(state)
-    metrics = [
-        {
-            "name": "Must Have 范围预算",
-            "target": "≤ 8 条",
-            "method": "统计当前派生 PRD 中来自父业务需求且 priority 为 Must Have 的功能需求数量；架构实现义务单独计数",
-        },
-        {
-            "name": "父需求追溯覆盖率",
-            "target": "100%",
-            "method": "统计每条派生功能需求是否包含 parent_req 并引用父 PRD 中存在的需求 ID",
-        },
-    ]
-    metrics.extend(
-        {
-            "name": metric.get("name", metric.get("id", "父级指标")),
-            "target": metric.get("target", "按父级定义"),
-            "method": metric.get("method", "按父级测量方式"),
-        }
-        for metric in context.get("related_success_metrics", [])
-    )
+    metrics = []
+    for index, metric in enumerate(context.get("related_success_metrics", []), start=1):
+        normalized = dict(metric)
+        normalized.setdefault("id", f"METRIC-D{index:03d}")
+        normalized.setdefault("verifies", [])
+        metrics.append(normalized)
     phase5.collect(metrics=metrics)
 
-    # Final assembly
-    prd_text = assemble_prd(state.draft_content)
-
-    # Final ambiguity scan
-    ambiguity = _run_ambiguity_check(state, prd_text)
-    if ambiguity["logic"]:
-        print("\n[ERROR] 发现逻辑冲突:")
-        errors = []
-        for item in ambiguity["logic"]:
-            error_msg = f"[逻辑冲突] {item['description']}"
-            print(f"  - {error_msg}")
-            errors.append(error_msg)
+    oracle_gaps = _check_oracle_coverage(state)
+    if oracle_gaps:
+        errors = [f"[{gap['id']}] {gap['reason']}" for gap in oracle_gaps]
         _write_error_report(state, errors, args)
+        print("[ERROR] 派生 PRD 缺少来源明确的 Acceptance Contract；未自动生成业务响应。")
         return EXIT_QUALITY_BLOCKED
 
-    # Save output
-    parent_doc = state.draft_content["P1"].get("parent_doc", "unknown")
-    module_name_out = state.draft_content["P1"].get("module_name", "unknown")
-    version = state.draft_content["P1"].get("version", "1.0.0")
-    output_path = Path(args.output) if args.output else Path(f"{parent_doc}_{module_name_out}_prd_v{version}.md")
-    output_path.write_text(prd_text, encoding="utf-8")
-    print(f"\nPRD已保存至: {output_path}")
-
-    coverage_path = output_path.with_suffix(".coverage.json")
-    coverage_report = {
-        "parent_doc_id": context.get("parent_doc_id", "UNKNOWN"),
-        "target_module": module_name,
-        "target_granularity": context.get("target_granularity", "auto"),
-        "status": "allocation_complete" if coverage_complete else "allocation_incomplete",
-        "items": coverage_ledger,
-        "warnings": derive_warnings,
-    }
-    coverage_path.write_text(
-        json.dumps(coverage_report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    prd_text = assemble_prd(state.draft_content)
+    output_path = Path(args.output) if args.output else Path(
+        f"{context['parent_doc_id']}_{module_name}_prd_v1.0.0.md"
     )
-    print(f"派生覆盖账本已保存至: {coverage_path}")
-
+    output_path.write_text(prd_text, encoding="utf-8")
     session_path = Path(f".prd_session_{state.session_id}.json")
     save_session(state, session_path)
-    print(f"会话已保存至: {session_path}")
-
+    print(f"\nPRD已保存至: {output_path}")
     return EXIT_SUCCESS
-
 
 def _select_mode_interactive(args: argparse.Namespace) -> Mode:
     """交互式选择运行模式。如果命令行已提供derive参数则自动推断。"""

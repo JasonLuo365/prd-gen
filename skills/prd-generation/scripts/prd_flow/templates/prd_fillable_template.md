@@ -1,319 +1,95 @@
-# PRD 产品需求文档 — 填写模板
+# PRD Fillable Template — Oracle-Ready Handoff
 
-> **使用说明**：本模板供你在运行 PRD Flow 工具之前，预先整理需求思路。
-> 填完后可直接复制内容到工具中，或作为团队内部评审的草稿。
+This template captures source business behavior for the downstream test-generation Skill. Do not write test cases or Gherkin here.
 
----
+## 1. Scope
 
-## 第一步：填写文档元数据（Frontmatter）
+- Product/release:
+- Target users:
+- Problem/outcome:
+- Current release boundary:
+- Non-goals:
+- Dependencies/data constraints:
 
-> 以下信息会出现在 PRD 的 YAML 头部。根据你当前所处的模式选择填写。
+## 2. Atomic Requirements
 
-### 你当前处于哪种模式？
+For each clause:
 
-- [ ] **Root 模式** — 正在为一个新项目/系统写顶层 PRD
-- [ ] **Derive 模式** — 正在为某个模块写派生 PRD（需要已有上层 PRD 和架构设计）
-
----
-
-### Root 模式必填
-
-| 字段 | 说明 | 你的填写 |
-|:---|:---|:---|
-| **项目名称** | 项目的英文名称，用于生成文档 ID | `[请填写，如：ecommerce_platform]` |
-| **作者** | PRD 编写者姓名 | `[请填写]` |
-| **优先级** | 项目整体优先级：P0（最高）、P1、P2 | `[请填写，如：P0]` |
-
-### Derive 模式必填
-
-| 字段 | 说明 | 你的填写 |
-|:---|:---|:---|
-| **目标模块** | 你要写 PRD 的模块英文名称 | `[请填写，如：payment_gateway]` |
-| **父 PRD** | 上层 PRD 的 doc_id | `[请填写，如：ECOMMERCE-PLATFORM-v1.0]` |
-| **父架构** | 上层架构设计文档 ID（可选） | `[请填写]` |
-| **模块接口** | 本模块对外暴露的接口列表 | `[请填写，见下方示例]` |
-| **模块依赖** | 本模块依赖的其他模块 | `[请填写，见下方示例]` |
-
-**接口列表示例**（Derive 模式参考）：
 ```yaml
-interfaces:
-  - name: create_payment    # 接口名称
-    method: POST            # HTTP 方法
-    path: /api/v1/payments  # 接口路径
-  - name: query_order
-    method: GET
-    path: /api/v1/orders/{id}
+id: REQ-001
+text: <one independently verifiable obligation>
+priority: Must Have
+release_scope: current
+requirement_kind: atomic
+source_kind: explicit
+evidence_refs: []
 ```
 
-**依赖列表示例**（Derive 模式参考）：
+Use `NFR-###` for non-functional clauses. Use `out_of_version` or `not_applicable` plus `scope_reason` only for documented exclusions.
+
+## 3. Success Metrics
+
+| ID | Metric | Target | Measurement | Verifies |
+|---|---|---|---|---|
+| METRIC-001 | | | | |
+
+## 4. Functional Acceptance Contract
+
 ```yaml
-dependencies:
-  - name: user_module       # 依赖模块名
-    type: upstream          # 依赖类型：upstream / downstream / internal
-  - name: notification_module
-    type: internal
+id: AC-REQ-001-01
+type: functional
+verifies: [REQ-001]
+release_scope: current
+actor:
+preconditions: []
+trigger:
+response: []
+observable_oracles: []
+boundaries:
+  - condition:
+    response:
+exceptions:
+  - condition:
+    response:
+evidence_refs: []
 ```
 
----
+## 5. NFR Verification Contract
 
-## 第二步：定义问题（Problem Statement）
-
-> 在写具体功能之前，先明确你要解决什么问题。这是整个 PRD 的出发点。
-
-### 2.1 目标用户是谁？
-
-**说明**：描述这个功能/模块服务的具体用户群体。越具体越好，避免"所有用户"这种泛泛的描述。
-
-**我的填写**：
-```
-[请在此处填写，1-2 句话描述目标用户]
-
-示例参考：
-电商平台的新注册用户，主要指首次访问平台并需要创建账户的消费者，
-年龄层在 18-45 岁之间，对注册流程的便捷性敏感。
+```yaml
+id: AC-NFR-001-01
+type: nfr
+verifies: [NFR-001]
+release_scope: current
+population:
+measurement_start:
+measurement_end:
+unit:
+threshold:
+exclusions: []
+pass_rule:
+evidence_refs: []
 ```
 
-### 2.2 用户的痛点是什么？
+## 6. Oracle Coverage Ledger
 
-**说明**：描述目标用户当前面临的核心问题。尽量用具体数据或场景描述，避免模糊词（如"很慢""不好用"）。
+| Requirement | Type | Release scope | Acceptance Contract | Status | Reason |
+|---|---|---|---|---|---|
+| | | | | | |
 
-**我的填写**：
-```
-[请在此处填写，描述用户当前的问题]
+## 7. Blocking Questions
 
-示例参考：
-当前注册流程需要填写 10 项以上信息（姓名、手机、邮箱、地址、身份证号等），
-平均完成时间 3 分钟，导致 60% 的用户在注册页面流失。
-```
+| ID | Missing field | Why it blocks | Owner/source needed |
+|---|---|---|---|
+| | | | |
 
-### 2.3 解决后的价值（机会窗口）
+## 8. Independent Agent Review
 
-**说明**：如果解决了上述痛点，会带来什么价值？最好能量化（如转化率提升 X%、用户留存提升 Y%）。
-
-**我的填写**：
-```
-[请在此处填写，描述解决痛点后的预期收益]
-
-示例参考：
-通过简化注册流程至 3 步以内（仅需邮箱+密码），预计注册转化率从 30% 提升至 70%，
-每月新增注册用户增加约 5 万人。
-```
-
----
-
-## 第三步：梳理需求（Requirements）
-
-> 将功能需求按优先级分类。这是 PRD 最核心的部分。
->
-> **优先级说明**：
-> - **Must Have** — 必须有。缺少则项目无法交付，必须在当前版本完成。
-> - **Should Have** — 应该有。提升用户体验，但缺少不影响核心功能，可延期。
-> - **Could Have** — 可以有。锦上添花，时间允许时实现，可做可不做。
-
-### 3.1 功能需求
-
-#### Must Have（必须有）
-
-**说明**：列出缺少就导致项目无法交付的核心功能。建议不超过 5 条。
-
-**格式要求**：每条需求包含编号 + 描述 + 可量化指标（如有）。
-- 编号格式：`[REQ-001]`、`[REQ-002]`...
-- 描述要具体，避免模糊词（如"很快""良好"）
-- 尽量包含数字指标（如"≤ 200ms""≥ 99.9%"）
-
-**我的填写**：
-```
-[请逐条列出 Must-Have 需求]
-
-示例参考：
-- [REQ-001] 支持邮箱注册，密码需包含 8 位以上字母数字组合
-- [REQ-002] 支持手机号注册，短信验证码有效期 5 分钟
-- [REQ-003] 登录后持久化会话，Token 有效期 7 天
-- [REQ-004] 注册接口响应时间 ≤ 200ms（P99）
-```
-
-#### Should Have（应该有）
-
-**说明**：列出能提升体验但缺少不影响核心交付的功能。
-
-**我的填写**：
-```
-[请逐条列出 Should-Have 需求]
-
-示例参考：
-- [REQ-005] 支持第三方 OAuth 登录（微信、GitHub）
-- [REQ-006] 注册完成后自动发送欢迎邮件
-- [REQ-007] 密码输入框支持显示/隐藏切换
-```
-
-#### Could Have（可以有）
-
-**说明**：列出锦上添花、时间允许时才做的功能。
-
-**我的填写**：
-```
-[请逐条列出 Could-Have 需求]
-
-示例参考：
-- [REQ-008] 支持生物识别登录（指纹、面容）
-- [REQ-009] 注册进度条动画效果
-```
-
-### 3.2 非功能需求
-
-**说明**：系统的性能、安全、可用性等技术约束，不是具体功能，但直接影响实现方案。
-
-**常见类别**：并发能力、响应时间、可用性、安全性、兼容性、数据存储。
-
-**格式要求**：编号以 `NFR-` 开头，如 `[NFR-001]`。
-
-**我的填写**：
-```
-[请逐条列出非功能需求]
-
-示例参考：
-- [NFR-001] 并发注册用户数 ≥ 500
-- [NFR-002] 注册接口响应时间 ≤ 200ms（P99）
-- [NFR-003] 系统可用性 ≥ 99.9%
-- [NFR-004] 密码需加密存储，符合国密 SM4 标准
-- [NFR-005] 支持同时在线用户数 ≥ 10,000
-```
-
----
-
-## 第四步：定义验收标准（Acceptance）
-
-> 用 Gherkin 语言编写验收场景，描述"在什么情况下，用户做了什么，系统应该怎么反应"。
->
-> **为什么用 Gherkin？** 因为它把验收标准写成可执行的自然语言，开发、测试、产品三方都能看懂。
->
-> **基本语法**：
-> ```
-> Feature: 功能名称
->   Scenario: 场景描述
->     Given 前置条件（用户处于什么状态）
->     When  用户操作（用户做了什么）
->     And   额外操作（如有多个步骤）
->     Then  预期结果（系统应该怎么反应）
-> ```
-
-### 4.1 每个 Must-Have 需求至少对应一个场景
-
-**检查清单**：
-- [ ] 我已为每条 Must-Have 需求编写了至少 1 个 Gherkin 场景
-- [ ] 每个场景都有明确的 Given / When / Then
-- [ ] 场景描述的结果是可观测、可验证的
-
-### 4.2 我的 Gherkin 场景
-
-**我的填写**（在下面的代码块中编写）：
-
-```gherkin
-# [请在此处填写你的 Gherkin 场景]
-# 每个 Feature 对应一个功能模块，每个 Scenario 对应一个具体场景
-
-Feature: [请填写功能名称，如：用户注册]
-
-  # === 正常路径场景 ===
-  Scenario: [请填写场景描述，如：通过邮箱成功注册]
-    Given [请填写前置条件，如：用户未登录且访问注册页面]
-    When  [请填写用户操作，如：用户输入有效邮箱和密码]
-    And   [请填写额外操作，如：用户点击注册按钮]
-    Then  [请填写预期结果，如：账户创建成功并发送验证邮件]
-
-  # === 异常路径场景 ===
-  Scenario: [请填写场景描述，如：邮箱已被注册]
-    Given [请填写前置条件]
-    When  [请填写用户操作]
-    Then  [请填写预期结果]
-    And   [请填写额外结果，如有]
-
-  # === 边界情况场景 ===
-  Scenario: [请填写场景描述，如：密码复杂度不足]
-    Given [请填写前置条件]
-    When  [请填写用户操作]
-    Then  [请填写预期结果]
-```
-
-**完整示例参考**：
-
-```gherkin
-Feature: 用户注册
-
-  Scenario: 通过邮箱成功注册
-    Given 用户未登录且访问注册页面
-    When 用户输入有效邮箱 "user@example.com" 和密码 "Abc12345"
-    And 用户点击注册按钮
-    Then 账户创建成功
-    And 系统向该邮箱发送验证邮件
-    And 页面跳转至"注册成功，请查收邮件"
-
-  Scenario: 邮箱已被注册
-    Given 用户访问注册页面
-    And 邮箱 "user@example.com" 已被注册
-    When 用户输入该邮箱和任意密码
-    And 用户点击注册按钮
-    Then 系统提示"该邮箱已被注册"
-    And 页面显示"前往登录"链接
-
-  Scenario: 密码复杂度不足
-    Given 用户访问注册页面
-    When 用户输入邮箱 "user@example.com" 和密码 "123"
-    And 用户点击注册按钮
-    Then 系统提示"密码需包含 8 位以上字母数字组合"
-    And 注册请求被拒绝
-    And 用户停留在注册页面
-```
-
----
-
-## 第五步：设定成功指标（Success Metrics）
-
-> 定义如何衡量这个 PRD 交付后的成功。每个指标都应该可以量化、可以测量。
->
-> **好的指标标准**：
-> - 具体：不模糊，有明确的数值
-> - 可测量：有明确的测量方式
-> - 可达成：目标值现实可行
-
-### 5.1 指标表格
-
-| 指标名称 | 目标值 | 测量方式 | 当前基线（如有） |
-|:---|:---|:---|:---|
-| `[请填写，如：注册转化率]` | `[请填写，如：≥ 70%]` | `[请填写，如：埋点统计]` | `[请填写，如：30%]` |
-| `[请填写，如：注册接口响应时间]` | `[请填写，如：≤ 200ms（P99）]` | `[请填写，如：性能测试]` | `[请填写，如：800ms]` |
-| `[请填写]` | `[请填写]` | `[请填写]` | `[请填写]` |
-| `[请填写]` | `[请填写]` | `[请填写]` | `[请填写]` |
-
-### 5.2 完整示例参考
-
-| 指标名称 | 目标值 | 测量方式 | 当前基线 |
-|:---|:---|:---|:---|
-| 注册转化率 | ≥ 70% | 埋点统计 | 30% |
-| 注册接口响应时间 | ≤ 200ms（P99） | 性能测试 | 800ms |
-| 系统可用性 | ≥ 99.9% | 监控统计（月度） | 99.5% |
-| 验证邮件送达率 | ≥ 95% | 邮件服务商统计 | 88% |
-
----
-
-## 填写完成检查清单
-
-在提交 PRD 之前，请确认以下事项：
-
-- [ ] 目标用户描述具体，不是"所有用户"
-- [ ] 痛点描述包含具体数据或场景
-- [ ] Must-Have 需求不超过 5 条，且每条都有可量化指标
-- [ ] 所有 Must-Have 需求都有对应的 Gherkin 验收场景
-- [ ] Gherkin 场景的 Then 步骤是可观测、可验证的
-- [ ] 成功指标都包含目标值和测量方式
-- [ ] 全文没有模糊词（"很快""良好""友好"等），已替换为具体数字
-
----
-
-## 下一步
-
-填完本模板后，你可以：
-
-1. **直接使用**：将内容复制到 PRD Flow 工具中，按交互流程逐步确认
-2. **团队评审**：先将此文档发给团队评审，收集反馈后再运行工具
-3. **保存为草稿**：作为项目文档的一部分，后续迭代时更新
+- Scope frozen:
+- Atomicity passed:
+- Functional oracle coverage passed:
+- NFR measurement completeness passed:
+- References resolved:
+- Conflicts absent:
+- Blocked count:
+- Ready for test generation:
