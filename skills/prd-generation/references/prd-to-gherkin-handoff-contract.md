@@ -98,7 +98,7 @@ Unacceptable evidence:
 
 ## 6. Mechanical Gates
 
-Before `ready_for_test_generation: true`, verify:
+For Root mode, before `ready_for_test_generation: true`, verify:
 
 1. IDs are unique and references resolve.
 2. Every current normative clause is atomic.
@@ -113,9 +113,24 @@ Before `ready_for_test_generation: true`, verify:
 
 If any gate fails, keep the artifact as a draft and list exact blocking fields. Do not fill the field with invented content.
 
+For Derive mode, do not reopen the parent's product-quality review. Verify only the inheritance transformation:
+
+1. Architecture direct-child IDs are unique and resolve.
+2. Every parent functional clause, exclusion, NFR, Acceptance Contract, and success metric has at least one direct child owner.
+3. Every inherited child item references a real parent item and preserves its normative meaning and release scope.
+4. The union of child assignments covers the complete parent set; intentional multi-owner assignments are allowed.
+5. No requirement is created from architecture prose or generic domain knowledge.
+6. Every generated direct child contains at least one inherited current-release obligation.
+7. Every inherited current requirement retains a complete, type-compatible parent Acceptance Contract.
+8. Acceptance Contract and success-metric requirement references are remapped to real child IDs; no parent-only or unknown ID remains.
+9. A parent contract split across child owners has an explicit architecture projection: `shared` for intentional shared integration context or `project` for a complete child-scoped contract. Existing child output is never used as projection evidence.
+10. Child frontmatter contains only ordered, deduplicated architecture identifier lists (`interface_refs`, `dependency_refs`, and `event_refs`); complete architecture objects are not duplicated into the PRD.
+
+When these checks pass, write one `prd.md` per direct child with `inheritance_complete: true`. Derive does not require independent Agent review.
+
 ## 7. Operational Closure and Handoff
 
-After running the mechanical gates, the PRD generator must repeatedly:
+In Root mode, after running the mechanical gates, the PRD generator must repeatedly:
 
 1. recompute blocked rows;
 2. ask one product decision at a time, ordered by scope, functional oracle, then NFR measurement;
@@ -123,6 +138,8 @@ After running the mechanical gates, the PRD generator must repeatedly:
 4. rerun all gates.
 
 With any blocker or pending/failed independent review, save `*.draft.md` with `status: draft` and `ready_for_test_generation: false`; downstream handoff is prohibited. Only a zero-blocker, independently passed artifact may use the normal `.md` filename with `status: approved` and `ready_for_test_generation: true`.
+
+In Derive mode, incomplete allocation, an empty direct child, lost Acceptance Contract coverage, or an unresolved metric reference is a failed transformation, not a draft state. Write no partial child PRDs and leave existing outputs unchanged.
 
 ## 8. Quality-report Recovery
 

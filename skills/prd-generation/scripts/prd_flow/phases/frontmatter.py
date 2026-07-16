@@ -7,6 +7,21 @@ from prd_flow.session import SessionState
 from prd_flow.utils import generate_doc_id
 
 
+def _stable_refs(items: list[Any] | None, keys: tuple[str, ...]) -> list[str]:
+    """Return ordered, deduplicated identifiers without embedding full records."""
+    refs: list[str] = []
+    for item in items or []:
+        ref: Any = item if isinstance(item, str) else None
+        if isinstance(item, dict):
+            ref = next((item.get(key) for key in keys if item.get(key)), None)
+        if ref is None:
+            continue
+        normalized = str(ref).strip()
+        if normalized and normalized not in refs:
+            refs.append(normalized)
+    return refs
+
+
 class FrontmatterPhase(Phase):
     @property
     def phase_id(self) -> str:
@@ -107,13 +122,15 @@ class FrontmatterPhase(Phase):
             "parent_arch": resolved_parent_arch,
             "module_name": module_name,
             "author": author,
-            "status": "draft",
+            "status": "complete",
             "priority": priority,
             "created_at": datetime.now().isoformat(),
-            "interfaces": interfaces,
-            "dependencies": dependencies,
-            "events": events or [],
+            "interface_refs": _stable_refs(interfaces, ("contract_id", "name", "path")),
+            "dependency_refs": _stable_refs(dependencies, ("name", "module")),
+            "event_refs": _stable_refs(events, ("contract_id", "event_name", "name")),
             "implementation_surfaces": implementation_surfaces or [],
+            "inheritance_complete": True,
+            "release_scope_frozen": True,
         }
 
         self.update_state(data)

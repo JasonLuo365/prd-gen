@@ -2,185 +2,111 @@
 
 ## Decision Object
 
-Given a node `N = PRD + testcase.feature + architecture + traceability + risks`, `LeafReady(N)` means:
-
-The node is small and explicit enough for an AI implementation session, and the result can be automatically checked without further decomposition reducing major risk.
-
-Operational definition:
+Leaf Gate judges a validated node `N = PRD + testcase + effective architecture + traceability + risks`.
 
 ```text
-LeafReady(N)
-iff
-C1 behavior complexity is controlled
-and C2 contract boundary is clear
-and C3 AI implementation context is controlled
-and C4 automatic verification is decidable
-and C5 residual risk is low and decomposition gain is low
+ContinueLayering(N)
+iff another layer materially improves
+behavior isolation
+or boundary clarity
+or implementation-context control
+or verification independence
+or risk isolation.
 ```
 
-This is an operational sufficiency and necessity claim for the process, not a guarantee that the implementation will be correct on the first attempt.
+The only final decisions are `CONTINUE_LAYERING` and `STOP_LAYERING`.
 
-## C1 Behavior Complexity Is Controlled
+Artifact incompleteness is not a layering result. Missing or weak upstream evidence produces `INPUT_ERROR` without a `decision` field.
 
-Pass when the current node's `testcase.feature` describes a small behavior surface:
+## Preconditions
 
-- Scenario points are within the configured threshold.
-- A scenario does not hide multiple subsystems or multiple business loops.
-- Each scenario verifies one clear behavior or one tight behavior family.
-- Scenario Outline examples are bounded and not disguising broad product scope.
+Before judging decomposition gain, require:
 
-Static evidence:
+- current-node PRD and testcase;
+- an effective architecture package that has completed the upstream testcase-driven mock/validation loop;
+- complete caller-visible contract fields;
+- current-layer requirement-to-testcase-to-primary-architecture traceability;
+- no unresolved TODO/TBD or implementation-controlling open question;
+- no unresolved high risk left by the upstream validation loop;
+- a valid semantic judgement format when producing a final decision.
 
-- scenario count
-- expanded case count
-- max steps per scenario
-- max REQ tags per scenario
-- untagged scenarios
-- normalized `Scenario` items and parser name from the static report
+A separate architecture validation report is optional. The validation process may already be reflected in a flattened final architecture package.
 
-LLM evidence:
+## C1 Behavior Complexity
 
-- whether scenario language indicates a product-level end-to-end story
-- hidden domains or subsystems inside a single scenario
-- whether scenarios are leaf-level tests or root-level acceptance stories
+Return `CONTINUE_LAYERING` when behavior can be separated into meaningful child nodes:
 
-Fail examples:
+- multiple independent behavior families or business loops;
+- one scenario hiding several subsystems;
+- composite scenarios spanning many unrelated requirements;
+- a large Scenario Outline masking distinct behavior;
+- root-level acceptance stories that are not implementation-unit tests.
 
-- "User completes remote office task" contains Telegram input, planning, authorization, execution, status, recovery, and result reporting.
-- A single scenario maps to many unrelated requirements.
+Return `STOP_LAYERING` on C1 when behavior is one tight implementation family and another split would be arbitrary.
 
-## C2 Contract Boundary Is Clear
+Static evidence includes scenario points, expanded cases, step counts, tags, composite scenarios, and normalized scenarios. Semantic evidence identifies hidden domains and business loops.
 
-Pass when the node has a small semantic contract:
+## C2 Boundary Width
 
-- inputs
-- outputs
-- errors
-- states or state transitions
-- side effects
-- dependencies
+Contract completeness is a prerequisite, not the decision itself.
 
-Static evidence:
+Return `CONTINUE_LAYERING` when the complete architecture still contains multiple independently implementable contracts, owners, state machines, consistency boundaries, or unrelated side-effect groups.
 
-- architecture artifact exists
-- required contract fields or terms appear
-- normalized `Contract` items from the static report
+Return `STOP_LAYERING` on C2 when the node exposes one cohesive semantic boundary. Multiple files do not imply multiple boundaries, and one file does not imply one boundary.
 
-LLM evidence:
+Only the primary architecture package can establish boundary evidence. Optional validation, remediation, and supporting files cannot replace it.
 
-- whether the contract is semantically complete
-- whether the boundary is too wide
-- whether the contract leaks internals instead of hiding implementation details
+## C3 Implementation Context
 
-Fail examples:
+Return `CONTINUE_LAYERING` when separable responsibilities make a single implementation session exceed the configured context budget or require too many simultaneous architectural views.
 
-- The architecture names several services but no caller-visible contract.
-- The node requires multiple unrelated contracts to describe its behavior.
+Return `STOP_LAYERING` on C3 when the implementation pack is bounded and no child split would meaningfully reduce cognitive load.
 
-## C3 AI Implementation Context Is Controlled
+TODOs and open questions are precondition errors, not evidence for layering.
 
-Pass when vibecoding can happen in a bounded implementation session:
+## C4 Independent Verifiability
 
-- Required artifacts fit a reasonable context budget.
-- No unresolved TODO/TBD/Open Question controls implementation behavior.
-- The AI does not need to invent business rules.
-- The AI does not need to make new architecture decisions.
+Trace completeness and assertable outcomes are prerequisites.
 
-Static evidence:
+Return `CONTINUE_LAYERING` when correct verification still requires several independently executable behavior groups, environments, dependency harnesses, or failure domains to be tested together.
 
-- estimated token count
-- artifact count
-- TODO/TBD/open question count
-- external reference count
+Return `STOP_LAYERING` on C4 when the node can be implemented and automatically checked as one independent unit.
 
-LLM evidence:
+Weak or missing architecture evidence is an upstream validation error, not a reason to create child nodes.
 
-- hidden assumptions
-- missing business rules
-- unclear ownership or dependencies
-- decisions the AI would have to guess
+## C5 Decomposition Gain
 
-Fail examples:
+Return `CONTINUE_LAYERING` only when proposed children materially improve at least one of:
 
-- "Handle safely" appears without a concrete safe/unsafe rule.
-- "Simple task" is referenced but not defined.
+- responsibility ownership;
+- contract isolation;
+- consistency or state isolation;
+- implementation-context size;
+- automatic-test isolation;
+- safety, privacy, concurrency, recovery, or external-dependency isolation;
+- parallel implementation without shared hidden decisions.
 
-## C4 Automatic Verification Is Decidable
+Return `STOP_LAYERING` when further children would be pass-through wrappers, mechanical layers, arbitrary document sections, or fragments that cannot be implemented and tested independently.
 
-Pass when implementation correctness can be checked automatically:
+## Final Rule
 
-- Requirements map to scenarios.
-- Scenarios map to architecture components or contracts.
-- Then clauses describe observable outcomes.
-- Tests can fail for wrong behavior.
+Return `CONTINUE_LAYERING` when deterministic complexity is conclusive or any evidence-backed semantic criterion shows material decomposition gain.
 
-Static evidence:
+Return `STOP_LAYERING` only when:
 
-- REQ -> Scenario coverage
-- traceability file exists
-- unmapped requirements
-- untagged scenarios
-- profile-backed or generic identifier architecture evidence strength
+- all preconditions pass;
+- deterministic checks do not require another layer;
+- every semantic criterion is `pass` with evidence and sufficient confidence;
+- further decomposition has no material benefit.
 
-LLM evidence:
+Warnings, missing evidence, low confidence, malformed judgement, or upstream completeness gaps are evaluation errors. They do not create a third decision.
 
-- whether Then clauses are assertable
-- whether checks observe behavior rather than implementation vibes
-- whether nonfunctional requirements have measurable probes
+## Architecture Evidence Roles
 
-Fail examples:
+- `architecture_files`: effective primary package; authoritative for C2 and C4.
+- `architecture_validation_files`: optional provenance/risk evidence; never required as a file and never substitutes for primary evidence.
+- `architecture_remediation_files`: planned corrections only.
+- `architecture_supporting_files`: non-authoritative source material unless promoted by the manifest.
+- `architecture_manifest` and `architecture_selection`: explain how the primary set was chosen.
 
-- Then "system handles it reasonably".
-- Performance requirement exists without measurement point.
-
-## C5 Residual Risk Is Low And Decomposition Gain Is Low
-
-Pass when no unresolved high risk remains and further decomposition is unlikely to improve clarity:
-
-- No unresolved high risk in the risk register.
-- Open questions are not implementation-blocking.
-- External dependencies have known contracts or stubs.
-- Further decomposition would only create pass-through wrappers or mechanical layers.
-
-Static evidence:
-
-- risk register exists
-- unresolved high-risk count
-- open question count
-- normalized `Risk` observations from the static report
-
-LLM evidence:
-
-- whether deeper decomposition would reduce risk
-- whether the current node crosses safety, permission, data consistency, concurrency, or recovery boundaries
-- whether proposed children would be deep modules or shallow forwarding
-
-Fail examples:
-
-- Authorization, high-risk actions, and recovery policy are still bundled in one node.
-- Safety-sensitive behavior depends on an undefined policy.
-
-## Decision Rule
-
-Return `LEAF_READY` only when:
-
-- static checks have no hard failure,
-- LLM judgement marks all criteria `pass`,
-- every pass includes evidence,
-- no unresolved high risk remains,
-- confidence is at or above the configured minimum.
-
-Otherwise:
-
-- `NEEDS_DECOMPOSITION` when behavior or boundaries are too large,
-- `NEEDS_REFINEMENT` when required artifacts, definitions, contracts, testcase mapping, architecture evidence, owner decisions, or risk dispositions are missing.
-
-For `NEEDS_REFINEMENT`, include `refinement_routes` with one or more targets:
-
-- `architecture`: contract fields, dependencies, side effects, architecture evidence, risk mitigations that belong in architecture.
-- `testcase`: missing scenario coverage, missing tags, unobservable Then clauses, metric/test probes.
-- `owner_decision`: product, business, compliance, risk-acceptance, or low-confidence semantic decisions that generation must not invent.
-
-## Project Profile Boundary
-
-The checker is project-neutral by default. Domain terms, aliases, architecture markers, and custom risk classes must come from `leaf-gate.profile.json` or the `profile` section of `leaf-gate.config.json`. Do not treat a missing profile match as proof that the architecture is absent; use it as a refinement signal unless direct IDs or generic identifiers already provide enough evidence.
+The package may be flat or nested. Do not infer authority from numbering, language, filename, file size, or directory name alone.

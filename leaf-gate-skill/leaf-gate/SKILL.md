@@ -1,206 +1,212 @@
 ---
 name: leaf-gate
-description: Use when deciding whether a layered PRD node with a PRD, testcase.feature, architecture, traceability, or risk artifacts should be decomposed further, refined, reviewed by a human, or sent to vibecoding.
+description: Use when deciding only whether a validated layered PRD node should continue layering or stop layering and enter implementation.
 ---
 
 # Leaf Gate
 
-## Overview
+## Purpose
 
-Leaf Gate is the stopping decision for an explainable layered development flow. Use it after a current-layer PRD, testcase, architecture, and architecture-validation pass exist, before choosing between deeper decomposition and vibecoding.
+Leaf Gate is a binary stopping decision in an explainable layered development flow. It answers one question:
 
-The gate is not a prompt-only review. Prepare traceability and risk evidence first, run deterministic checks second, then perform semantic judgement with evidence.
+> Will another layer materially reduce behavior complexity, boundary width, implementation context, verification coupling, or residual risk?
 
-## Required Inputs
+It does not repair the PRD, testcase, or architecture. Architecture correction belongs to the upstream testcase-driven mock/validation loop. Run Leaf Gate only after that loop has produced an effective architecture package for the current node.
 
-Use a node folder when available:
+The only final decisions are:
+
+| Decision | Meaning |
+| --- | --- |
+| `CONTINUE_LAYERING` | Create lower-layer nodes because another layer has material value. |
+| `STOP_LAYERING` | Further layering has no material value; the node may enter implementation. |
+
+`INPUT_ERROR` is a tool execution status, not a third Leaf Gate decision. It means the upstream artifacts are not ready for a layering judgement.
+
+## Input Contract
+
+A node normally contains:
 
 ```text
 node-id/
   prd.md
   testcase.feature
-  architecture.yaml|json|md
-  traceability.yaml|json|md
-  risks.yaml|json|md
+  architecture.md|yaml|json
+  traceability.md              # may be generated/refreshed by Leaf Gate
+  risks.md                     # may be generated/refreshed by Leaf Gate
 ```
 
-Multi-file architecture packages are also supported:
+Multi-file architecture packages are supported. This flattened example is not a fixed template:
 
 ```text
 node-id/
   prd.md
   testcase.feature
   architecture/
-    output/
-      01-system-overview.md
-      02-module-partitioning.md
-      03-runtime-architecture.md
-      04-adr-summary.md
-      05-data-model.md
-      06-interface-contracts.md
-      07-technology-choices.md
-      08-deployment.md
-    validation-report.md
+    README.md                  # optional package index/manifest
+    <effective architecture documents...>
 ```
 
-Architecture generator output folders are also supported directly:
+Recursive architecture packages are also valid. An `architecture-manifest.yaml` artifact inventory may select files such as `02-architecture-decomposition.md`, `03-state-and-data.md`, `04-contracts-and-runtime.md`, optional machine-readable contracts, and `child-handoff.md`.
+
+Nested packages are also supported:
 
 ```text
 node-id/
-  prd.md
-  *.feature
-  output/
-    01-system-overview.md
-    02-module-partitioning.md
-    03-runtime-architecture.md
-    04-adr-summary.md
-    05-data-model.md
-    06-interface-contracts.md
-    07-technology-choices.md
-    08-deployment.md
+  architecture/
+    <package directory>/
+      README.md
+      <effective architecture documents...>
+    <optional validation or provenance documents...>
 ```
 
-When `traceability.md` or `risks.md` is absent or stale, `scripts/run_leaf_gate.py` refreshes them from the current PRD, testcase, architecture package, and validation report before static checks. Use `--skip-prepare` only when intentionally reviewing existing evidence files without regenerating them.
+Leaf Gate does not require a validation report file. The stable prerequisite is that the architecture package has already passed the upstream testcase-driven mock/validation loop. That process may be folded into the final package and leave no separate report.
 
-Generated traceability uses deterministic evidence strength:
+## Architecture Package Discovery
 
-| Strength | Meaning | Gate effect |
+Do not assume a fixed directory, file count, numbering scheme, language, or contract filename.
+
+Discovery order:
+
+1. Explicit `--architecture` file or architecture root.
+2. Conventional single architecture file.
+3. Architecture package directory.
+4. Matched architecture file as a fallback.
+
+Inside a directory, prefer local links declared by README/index/manifest/目录/索引/清单. Without a usable manifest, select the directory with the strongest semantic coverage of system context, runtime, data/consistency, contracts, decisions, and deployment.
+
+Files are classified by role:
+
+| Role | Meaning | Layering evidence use |
 | --- | --- | --- |
-| `strong` | Direct REQ/NFR ID match, or architecture contract evidence plus strong boundary/profile terms. | Counts as covered. |
-| `medium` | Architecture contract evidence plus multiple project profile or generic identifier matches. | Counts as covered. |
-| `weak` | Only broad or partial lexical overlap matches. | Fails C4 as `weak_evidence`; do not send to human review. |
-| `none` | No usable architecture evidence. | Fails C4 as `missing_architecture`. |
+| `primary` | Effective architecture package used by downstream implementation. | Authoritative. |
+| `validation` | Optional validation/review/acceptance reports. | Risk and provenance only; never replaces primary evidence. |
+| `remediation` | Optional modification or remediation plans. | Intent only; never proves a completed change. |
+| `supporting` | Workbench, generation plan, assumptions, DDD analysis, and other source material. | Non-authoritative unless promoted by the package manifest. |
 
-Weak or missing architecture evidence is a refinement issue, not a decomposition shortcut. The static decision should be `NEEDS_REFINEMENT` unless behavior complexity also fails, in which case `NEEDS_DECOMPOSITION` takes priority.
+The static report exposes `architecture_files`, `architecture_validation_files`, `architecture_remediation_files`, `architecture_supporting_files`, `architecture_manifest`, and `architecture_selection`. Inspect the inventory before semantic judgement. If classification is wrong, correct the explicit input mapping and rerun.
 
-If files are named differently, map them explicitly in the report. Do not judge leaf readiness from a root PRD's high-level Acceptance Gherkin when a detailed `testcase.feature` exists. Judge the current node's testcase.
+## Preconditions Versus Decisions
 
-For derive-layer PRDs, treat derived IDs as the current-layer requirements:
+Leaf Gate must not translate artifact-quality problems into layering decisions.
 
-- Current requirements include IDs such as `REQ-D001`, `NFR-D001`, and `REQ-IF001`.
-- Parent IDs in metadata such as `parent_req: REQ-004` are traceability metadata, not current-layer requirements that need direct testcase tags.
-- Traceability should map `REQ-Dxxx -> parent_req REQ-xxx -> testcase @REQ-Dxxx -> architecture evidence`.
-- Do not fail C4 merely because testcase tags use the derived ID rather than the parent ID.
+The following are precondition failures:
 
-## Workflow
+- missing PRD, testcase, architecture, traceability, or risks;
+- missing contract inputs, outputs, errors, states, side effects, or dependencies;
+- unmapped current-layer requirements;
+- untagged scenarios;
+- weak or missing primary-architecture evidence;
+- unresolved high risks;
+- unresolved TODO/TBD or open questions;
+- invalid, incomplete, low-confidence, or non-binary semantic judgement.
 
-1. Run Leaf Gate. The script first prepares evidence, then runs static checks:
-
-```bash
-python scripts/run_leaf_gate.py <node-dir> --output <node-dir>/leaf-gate.static.json
-```
-
-When artifact names differ from the conventions, pass them explicitly:
-
-```bash
-python scripts/run_leaf_gate.py <node-dir> \
-  --prd prd.md \
-  --feature guided-math-assistant.feature \
-  --architecture output \
-  --config leaf-gate.config.json \
-  --profile leaf-gate.profile.json \
-  --output <node-dir>/leaf-gate.static.json
-```
-
-Configuration is JSON and can be supplied by convention or flag:
+Return an error object without `decision`:
 
 ```json
 {
-  "thresholds": {
-    "max_scenario_points": 10,
-    "max_implementation_pack_tokens": 18000
-  },
-  "profile_path": "leaf-gate.profile.json",
-  "profile": {
-    "trace_terms": ["checkout", "receipt"],
-    "trace_synonyms": {
-      "receipt": ["receiptId", "order confirmation"]
-    },
-    "architecture_markers": ["PaymentGateway"],
-    "risk_class_patterns": {
-      "payment": ["\\bpayment\\b", "\\bbilling\\b"]
-    },
-    "high_risk_classes": ["payment"]
-  }
+  "status": "INPUT_ERROR",
+  "error": "UPSTREAM_VALIDATION_INCOMPLETE",
+  "message": "The upstream artifacts are not ready for a layering decision.",
+  "details": {}
 }
 ```
 
-`leaf-gate.profile.json` uses the same `profile` fields. The core checker has no project-specific trace vocabulary; project terms must come from the profile or appear as generic identifiers/API paths/numeric boundaries in the artifacts.
+Do not generate refinement routes. Send the error back to the existing upstream validation workflow using the normal workflow orchestration outside Leaf Gate.
 
-The static report includes canonical parsed items under existing report fields:
+## Workflow
 
-- `requirements.items[]` contains normalized requirements with source refs.
-- `C1_behavior_complexity.evidence.scenarios[]` contains normalized scenarios, tags, steps summary, parser name, and source refs.
-- `C2_contract_boundary.evidence.contracts[]` contains normalized contract evidence.
-- `C5_risk_decomposition.evidence.items[]` contains normalized risk-class observations.
+1. Confirm the current node has completed testcase-driven architecture mock/validation.
+2. Discover the PRD, current-node testcase, effective architecture package, and optional provenance files.
+3. Prepare or refresh `traceability.md` and `risks.md`.
+4. Run deterministic checks.
+5. Stop with `INPUT_ERROR` if a precondition is incomplete.
+6. If deterministic complexity already proves another layer is useful, return `CONTINUE_LAYERING`.
+7. Otherwise run the LLM semantic decomposition-gain judgement.
+8. Return exactly `CONTINUE_LAYERING` or `STOP_LAYERING`.
 
-Gherkin parsing first tries `gherkin-official` when it is already installed. Otherwise the stdlib fallback handles adjacent tags, Scenario Outline examples, step lines, and source line refs.
+Static evidence can be generated before LLM judgement:
 
-When `--output` is provided, the script also writes `<output-dir>/leaf-gate.refinement.md` as an index. Detailed human-readable handoffs are split by target: `leaf-gate.refinement.architecture.md`, `leaf-gate.refinement.testcase.md`, and `leaf-gate.refinement.owner_decision.md` when those targets exist.
-When the static decision is `NEEDS_DECOMPOSITION`, the script also writes `leaf-gate.decomposition.md` with generic child-node cut suggestions.
+```bash
+python scripts/run_leaf_gate.py <node-dir> \
+  --architecture architecture \
+  --output <node-dir>/leaf-gate.static.json
+```
 
-2. Confirm the generated `traceability.md`, `risks.md`, `leaf-gate.refinement.md`, and target-specific refinement files reflect the current node scope. If they show missing testcase coverage, missing architecture evidence, or open high risk, do not override that gap in the LLM judgement.
-3. Read `references/leaf_gate_rubric.md`.
-4. Read `references/llm_judge_prompt.md` and judge the five criteria against the PRD, feature file, architecture, traceability, risks, and static report.
-5. Produce a final `leaf-gate.report.json` using `references/report_template.json`.
-6. Decide with these statuses only:
+When static evidence is valid but not conclusive, the report has `phase: STATIC_EVIDENCE` and `decision: null`. This is an unfinished evaluation phase, not a Leaf Gate result. Supply semantic judgement to produce a final binary result:
 
-| Decision | Meaning |
-| --- | --- |
-| `LEAF_READY` | The node may enter vibecoding. |
-| `NEEDS_DECOMPOSITION` | Generate lower-layer PRDs. |
-| `NEEDS_REFINEMENT` | Do not decompose yet; route artifact or owner-decision fixes through `refinement_routes`. |
+```bash
+python scripts/run_leaf_gate.py <node-dir> \
+  --architecture architecture \
+  --llm-judgement <node-dir>/leaf-gate.llm.json \
+  --output <node-dir>/leaf-gate.report.json
+```
 
-When the decision is `NEEDS_REFINEMENT`, include `refinement_routes`:
-
-| Target | Meaning |
-| --- | --- |
-| `architecture` | Architecture contract, dependency, side-effect, or architecture-evidence fix. |
-| `testcase` | Testcase coverage, scenario tag, observable assertion, or test mapping fix. |
-| `owner_decision` | Product, business, compliance, or risk decision that generation must not invent. |
-
-For human handoff, share only the target-specific Markdown file with each owner instead of asking upstream owners to read JSON or a combined report.
-
-## Hard Rules
-
-- Do not return `LEAF_READY` from static checks alone.
-- Do not return `LEAF_READY` unless all five criteria pass.
-- Every LLM PASS or FAIL must cite evidence from an artifact or the static report.
-- If evidence is missing, choose `NEEDS_REFINEMENT`, not PASS.
-- If unresolved high risk remains, choose `NEEDS_REFINEMENT` with an `owner_decision`, `architecture`, or `testcase` route, or choose `NEEDS_DECOMPOSITION` when C1/C2 show the node is too broad.
-- If a scenario is a system-level story hiding multiple subsystems, fail behavior complexity even if the scenario count is low.
-- Do not treat generated `traceability.md` or `risks.md` as proof by themselves. They are evidence indexes; judge the underlying PRD, testcase, architecture, and validation report.
-- Do not upgrade `weak_evidence` during semantic judgement. Weak evidence remains a static C4 failure and should lead to `NEEDS_REFINEMENT` with an `architecture` route or to decomposition if behavior complexity also fails.
+Use explicit `--prd`, `--feature`, `--architecture`, `--traceability`, `--risks`, `--config`, and `--profile` paths for unusual layouts.
 
 ## Five Criteria
 
-Use the rubric file for full details. In brief:
+### C1 Behavior Complexity
 
-| ID | Criterion | Static checker role | LLM judge role |
-| --- | --- | --- | --- |
-| C1 | Behavior complexity is controlled | Count scenarios, examples, steps, tags, coverage | Detect hidden multi-subsystem stories |
-| C2 | Contract boundary is clear | Check contract fields | Judge semantic completeness and boundary width |
-| C3 | AI implementation context is controlled | Estimate size, TODOs, open questions, references | Detect hidden assumptions and new architecture decisions |
-| C4 | Automatic verification is decidable | Check traceability and executable assertions | Judge observability and assertion quality |
-| C5 | Residual risk is low and decomposition gain is low | Check risk register and unresolved items | Judge whether deeper decomposition still reduces risk |
+Determine whether the testcase contains multiple independent behavior families, business loops, subsystems, or an oversized Scenario/Outline. Materially separable behavior means `CONTINUE_LAYERING`.
 
-## Common Mistakes
+### C2 Boundary Width
 
-| Mistake | Correct response |
-| --- | --- |
-| Counting only root PRD Acceptance scenarios | Use the current node's detailed `testcase.feature`. |
-| Treating low scenario count as leaf readiness | Check hidden domains and scenario breadth. |
-| Letting the LLM decide without static checks | Run the checker first and cite its output. |
-| Treating missing risk files as no risk | Mark the node as `NEEDS_REFINEMENT`. |
-| Feeding an entire architecture working directory | Prefer `architecture/output` plus `architecture/validation-report.md`; avoid intermediate drafts unless cited by the final package. |
-| Treating generated evidence as self-certifying | Use traceability and risks as indexes back to source artifacts. |
-| Treating weak keyword overlap as coverage | Require `strong` or `medium`; weak evidence fails C4. |
-| Passing a node with vague Then clauses | Fail C4 unless outcomes are observable and assertable. |
+Contract-field completeness is a prerequisite. Once complete, judge whether the node still crosses multiple independently implementable contracts, ownership boundaries, or consistency boundaries. A broad semantic boundary means `CONTINUE_LAYERING`.
+
+### C3 Implementation Context
+
+Determine whether one implementation session can hold the required PRD, testcase, contracts, runtime/data constraints, and risk evidence. Excess context caused by separable responsibilities means `CONTINUE_LAYERING`.
+
+### C4 Independent Verifiability
+
+Trace completeness is a prerequisite. Once complete, judge whether the node can be implemented and automatically verified as one independent unit, or whether tests couple several separable child behaviors. Material verification coupling means `CONTINUE_LAYERING`.
+
+### C5 Decomposition Gain
+
+Judge the marginal value of another layer. Continue only when child nodes would materially improve responsibility clarity, context control, test isolation, risk isolation, or parallel implementation. Stop when children would be pass-through wrappers, mechanical layers, or arbitrary document splits.
+
+## Evidence Preparation
+
+Generated traceability uses these strengths:
+
+| Strength | Meaning | Effect |
+| --- | --- | --- |
+| `strong` | Direct requirement ID, an equivalent compact derived allocation (`D001-D003` → `REQ-D001`…`REQ-D003`), or strong contract/boundary evidence. | Prerequisite satisfied. |
+| `medium` | Multiple explicit architecture/profile identifiers. | Prerequisite satisfied. |
+| `weak` | Broad lexical overlap only. | `INPUT_ERROR`; upstream validation is incomplete. |
+| `none` | No usable primary-architecture evidence. | `INPUT_ERROR`; upstream validation is incomplete. |
+
+For derived PRDs, current-layer IDs such as `REQ-D001`, `NFR-D001`, and `REQ-IF001` are the requirements that must map to testcase and architecture evidence. Parent IDs are traceability metadata, not replacement testcase tags.
+
+`traceability.md` and `risks.md` are evidence indexes, not self-certifying proof. Semantic judgement must cite the underlying PRD, testcase, primary architecture, and static report.
+
+## Output
+
+A final report contains:
+
+- `phase: FINAL`;
+- one of the two decisions;
+- evidence-backed five-criterion judgement;
+- `next_action.type: decompose|vibecode`;
+- optional child-cut suggestions for `CONTINUE_LAYERING`.
+
+When `CONTINUE_LAYERING` is returned, the script may write `leaf-gate.decomposition.md`. Leaf Gate does not write refinement indexes, owner routes, or target-specific correction files.
+
+## Hard Rules
+
+- Never emit a third final decision.
+- Never use `CONTINUE_LAYERING` as a synonym for incomplete artifacts.
+- Never use `STOP_LAYERING` from static evidence alone unless the semantic judgement is present.
+- Never repair or invent missing architecture/testcase content inside Leaf Gate.
+- Never let validation, remediation, or supporting files replace primary architecture evidence.
+- Every semantic pass or fail must cite artifact-backed evidence.
+- A failed semantic criterion means another layer has material value, not that an upstream artifact needs refinement.
+- Recommend children by behavior, ownership, contract, consistency, or risk boundary; never by arbitrary document sections.
 
 ## Resources
 
-- `scripts/run_leaf_gate.py`: deterministic static checker and optional final decision combiner.
-- `references/leaf_gate_rubric.md`: full criteria, proof intent, and pass/fail guidance.
-- `references/llm_judge_prompt.md`: structured LLM judgement prompt.
+- `scripts/run_leaf_gate.py`: artifact discovery, evidence preparation, deterministic checks, input validation, and binary decision combination.
+- `references/leaf_gate_rubric.md`: full decomposition-focused criteria.
+- `references/llm_judge_prompt.md`: strict binary semantic judgement prompt.
 - `references/report_template.json`: final report shape.
-- `references/pressure_scenarios.md`: test scenarios for future skill validation.
+- `references/pressure_scenarios.md`: workflow pressure scenarios.

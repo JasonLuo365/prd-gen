@@ -147,7 +147,174 @@ def test_find_artifacts_uses_architecture_output_package(tmp_path: Path) -> None
 
     assert artifacts.architecture == node_dir / "architecture" / "output"
     assert node_dir / "architecture" / "output" / "06-interface-contracts.md" in artifacts.architecture_files
-    assert node_dir / "architecture" / "validation-report.md" in artifacts.architecture_files
+    assert node_dir / "architecture" / "validation-report.md" in artifacts.architecture_validation_files
+    assert node_dir / "architecture" / "validation-report.md" not in artifacts.architecture_files
+
+
+def test_architecture_roles_are_discovered_from_manifest_and_semantics(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L0-root"
+    node_dir.mkdir()
+    architecture = node_dir / "architecture"
+    delivery = architecture / "release-bundle"
+    validation = architecture / "验证结果"
+    delivery.mkdir(parents=True)
+    validation.mkdir()
+
+    (architecture / "architecture-workbench.md").write_text("# Architecture Workbench\n\nDraft only.\n", encoding="utf-8")
+    (architecture / "architecture-generation-plan.md").write_text("# Architecture generation plan\n", encoding="utf-8")
+    (delivery / "index.md").write_text(
+        "# Architecture package index\n\n"
+        "- [Overview](foundation.md)\n"
+        "- [Runtime](execution.md)\n"
+        "- [Contracts](public-boundaries.md)\n",
+        encoding="utf-8",
+    )
+    (delivery / "foundation.md").write_text("# 系统概览\n\n系统上下文与模块职责。\n", encoding="utf-8")
+    (delivery / "execution.md").write_text("# 运行时架构\n\n失败处理与状态流转。\n", encoding="utf-8")
+    contract = delivery / "public-boundaries.md"
+    contract.write_text(
+        "# 接口契约\n\n输入、输出、错误、状态、副作用、依赖。\n",
+        encoding="utf-8",
+    )
+    report = validation / "架构验证报告.md"
+    report.write_text("# 架构验证报告\n\n## 风险与缓解\n", encoding="utf-8")
+    plan = validation / "architecture-modification-plan.md"
+    plan.write_text("# Architecture modification plan\n", encoding="utf-8")
+
+    artifacts = leaf_gate.find_artifacts(node_dir)
+
+    assert artifacts.architecture == delivery
+    assert artifacts.architecture_selection == "manifest-links"
+    assert artifacts.architecture_manifest == delivery / "index.md"
+    assert contract in artifacts.architecture_files
+    assert report in artifacts.architecture_validation_files
+    assert plan in artifacts.architecture_remediation_files
+    assert architecture / "architecture-workbench.md" in artifacts.architecture_supporting_files
+    assert report not in artifacts.architecture_files
+    assert plan not in artifacts.architecture_files
+
+
+def test_recursive_yaml_manifest_and_compact_derived_allocations_are_authoritative(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-recursive"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text(
+        "REQ-D001: Resolve the query.\nREQ-D002: Preserve unmapped constraints.\nNFR-D001: Finish within 3 seconds.\n",
+        encoding="utf-8",
+    )
+    (node_dir / "testcase.feature").write_text(
+        """Feature: recursive child
+  @REQ-D001
+  Scenario: resolve query
+    Given a query
+    When it is resolved
+    Then a semantic query is returned
+
+  @REQ-D002
+  Scenario: preserve constraints
+    Given an unmapped constraint
+    When the query is resolved
+    Then the constraint remains visible
+
+  @NFR-D001
+  Scenario: meet deadline
+    Given a query
+    When it is resolved
+    Then it finishes within 3 seconds
+""",
+        encoding="utf-8",
+    )
+    architecture = node_dir / "architecture"
+    architecture.mkdir()
+    manifest = architecture / "architecture-manifest.yaml"
+    manifest.write_text(
+        "generated_artifacts:\n  - 02-architecture-decomposition.md\n  - 04-contracts-and-runtime.md\n",
+        encoding="utf-8",
+    )
+    decomposition = architecture / "02-architecture-decomposition.md"
+    decomposition.write_text(
+        """# 子节点注册表
+| child_id | 责任 | 分配需求 |
+|---|---|---|
+| query-resolution | 查询解析与约束保留。 | D001-D002、NFR-D001 |
+""",
+        encoding="utf-8",
+    )
+    (architecture / "04-contracts-and-runtime.md").write_text(
+        "# 契约\n\n输入、输出、错误、状态、副作用、依赖。\n",
+        encoding="utf-8",
+    )
+
+    artifacts = leaf_gate.find_artifacts(node_dir)
+    traceability = leaf_gate.build_traceability_text(artifacts)
+
+    assert artifacts.architecture_manifest == manifest
+    assert artifacts.architecture_selection == "manifest-links"
+    assert decomposition in artifacts.architecture_files
+    assert traceability.count("| strong | covered |") == 3
+    assert "explicit requirement allocation" in traceability
+
+
+def test_validation_report_cannot_substitute_for_final_architecture_evidence(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-node"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text("REQ-777: System frobnicates a request.\n", encoding="utf-8")
+    (node_dir / "testcase.feature").write_text(
+        "Feature: request\n\n  @REQ-777\n  Scenario: frobnicate\n"
+        "    Given a request\n    When it is submitted\n    Then resultId is returned\n",
+        encoding="utf-8",
+    )
+    output = node_dir / "architecture" / "output"
+    output.mkdir(parents=True)
+    (output / "contracts.md").write_text(
+        "# Interface Contracts\n\ninputs, outputs, errors, states, side effects, dependencies.\n",
+        encoding="utf-8",
+    )
+    (node_dir / "architecture" / "validation-report.md").write_text(
+        "# Validation Report\n\nREQ-777 is covered by FrobnicatingService and resultId.\n",
+        encoding="utf-8",
+    )
+
+    artifacts = leaf_gate.find_artifacts(node_dir)
+    traceability = leaf_gate.build_traceability_text(artifacts)
+
+    assert "| REQ-777 |" in traceability
+    assert "| covered |" not in traceability
+
+
+def test_flat_validated_architecture_package_needs_no_validation_report(tmp_path: Path) -> None:
+    leaf_gate = _load_leaf_gate_module()
+    node_dir = tmp_path / "L1-flat"
+    node_dir.mkdir()
+    (node_dir / "prd.md").write_text("REQ-001: System accepts an upload request.\n", encoding="utf-8")
+    (node_dir / "testcase.feature").write_text(
+        "Feature: upload\n\n  @REQ-001\n  Scenario: upload\n"
+        "    Given a valid file\n    When it is uploaded\n    Then uploadId is returned\n",
+        encoding="utf-8",
+    )
+    architecture = node_dir / "architecture"
+    architecture.mkdir()
+    (architecture / "README.md").write_text(
+        "# Effective architecture package\n\n- [Public boundary](public-boundary.md)\n",
+        encoding="utf-8",
+    )
+    (architecture / "public-boundary.md").write_text(
+        "# Interface contract\n\nREQ-001\n\n"
+        "- inputs: file\n- outputs: uploadId\n- errors: invalid file\n"
+        "- states: accepted\n- side effects: stores metadata\n- dependencies: object store\n",
+        encoding="utf-8",
+    )
+
+    report = leaf_gate.build_report(node_dir, None)
+    artifacts = report["static_checks"]["artifacts"]
+
+    assert artifacts["architecture"] == str(architecture)
+    assert artifacts["architecture_selection"] == "manifest-links"
+    assert artifacts["architecture_validation_files"] == []
+    assert report["phase"] == "STATIC_EVIDENCE"
+    assert report["decision"] is None
 
 
 def test_find_artifacts_ignores_leaf_gate_refinement_markdown(tmp_path: Path) -> None:
@@ -335,7 +502,7 @@ def test_derive_requirements_use_current_ids_and_preserve_parent_trace(tmp_path:
     assert c4_evidence["architecture_evidence_gaps"] == []
 
 
-def test_weak_architecture_evidence_routes_to_architecture_refinement(tmp_path: Path) -> None:
+def test_weak_architecture_evidence_is_an_upstream_input_error(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L0-root"
     node_dir.mkdir()
@@ -367,19 +534,21 @@ def test_weak_architecture_evidence_routes_to_architecture_refinement(tmp_path: 
         encoding="utf-8",
     )
 
-    report = leaf_gate.build_report(node_dir, None)
+    try:
+        leaf_gate.build_report(node_dir, None)
+    except leaf_gate.LeafGateInputError as exc:
+        error = exc
+    else:
+        raise AssertionError("Expected an upstream validation input error")
     traceability_text = (node_dir / "traceability.md").read_text(encoding="utf-8")
-    c4 = report["static_checks"]["C4_verifiability"]
 
     assert "| weak | weak_evidence |" in traceability_text
-    assert c4["status"] == "fail"
-    assert c4["evidence"]["architecture_evidence_gaps"] == ["REQ-001: weak_evidence"]
-    assert report["decision"] == "NEEDS_REFINEMENT"
-    routes = report["refinement_routes"]
-    assert any(route["target"] == "architecture" for route in routes)
+    assert error.code == "UPSTREAM_VALIDATION_INCOMPLETE"
+    assert error.details["architecture_evidence_gaps"] == ["REQ-001: weak_evidence"]
+    assert "decision" not in error.to_report()
 
 
-def test_refinement_routes_split_architecture_and_testcase_feedback(tmp_path: Path) -> None:
+def test_contract_and_testcase_gaps_are_not_layering_decisions(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L1-mixed-feedback"
     node_dir.mkdir()
@@ -418,93 +587,39 @@ def test_refinement_routes_split_architecture_and_testcase_feedback(tmp_path: Pa
         encoding="utf-8",
     )
 
-    report = leaf_gate.build_report(node_dir, None)
-    routes = report["refinement_routes"]
+    try:
+        leaf_gate.build_report(node_dir, None)
+    except leaf_gate.LeafGateInputError as exc:
+        error = exc
+    else:
+        raise AssertionError("Expected an upstream validation input error")
 
-    assert report["decision"] == "NEEDS_REFINEMENT"
-    architecture_routes = [route for route in routes if route["target"] == "architecture"]
-    testcase_routes = [route for route in routes if route["target"] == "testcase"]
-    assert architecture_routes
-    assert testcase_routes
-    assert any("side_effects" in action for route in architecture_routes for action in route["actions"])
-    assert any("REQ-D002" in action for route in testcase_routes for action in route["actions"])
-
-
-def test_target_refinement_markdown_only_contains_target_routes(tmp_path: Path) -> None:
-    leaf_gate = _load_leaf_gate_module()
-    node_dir = tmp_path / "L1-mixed-feedback"
-    _write_mixed_feedback_node(node_dir)
-
-    report = leaf_gate.build_report(node_dir, None)
-    architecture_markdown = leaf_gate.render_refinement_markdown(report, target="architecture")
-    testcase_markdown = leaf_gate.render_refinement_markdown(report, target="testcase")
-
-    assert "# Leaf Gate Refinement Suggestions: architecture" in architecture_markdown
-    assert "architecture/output/06-interface-contracts.md" in architecture_markdown
-    assert "side_effects" in architecture_markdown
-    assert "testcase.feature" not in architecture_markdown
-    assert "REQ-D002" not in architecture_markdown
-
-    assert "# Leaf Gate Refinement Suggestions: testcase" in testcase_markdown
-    assert "testcase.feature" in testcase_markdown
-    assert "REQ-D002" in testcase_markdown
-    assert "architecture/output/06-interface-contracts.md" not in testcase_markdown
-    assert "side_effects" not in testcase_markdown
+    assert error.code == "UPSTREAM_VALIDATION_INCOMPLETE"
+    assert error.details["missing_contract_fields"] == ["side_effects"]
+    assert error.details["unmapped_requirements"] == ["REQ-D002"]
 
 
-def test_llm_refinement_routes_preserve_target_specific_feedback(tmp_path: Path) -> None:
+def test_valid_semantic_judgement_stops_layering(tmp_path: Path) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L1-problem-intake"
     _write_node(node_dir)
     llm_path = node_dir / "leaf-gate.llm.json"
+    judgement = {
+        criterion: {
+            "status": "pass",
+            "confidence": 0.9,
+            "evidence": [f"Artifact evidence for {criterion}."],
+            "reason": "Further layering has no material benefit.",
+        }
+        for criterion in leaf_gate.CRITERIA
+    }
     llm_path.write_text(
         json.dumps(
             {
                 "node_id": "L1-problem-intake",
-                "llm_judgement": {
-                    "C1_behavior_complexity": {
-                        "status": "pass",
-                        "confidence": 0.9,
-                        "evidence": ["testcase.feature covers a single upload behavior group."],
-                        "reason": "Behavior scope is narrow enough.",
-                    },
-                    "C2_contract_boundary": {
-                        "status": "pass",
-                        "confidence": 0.9,
-                        "evidence": ["architecture/output/06-interface-contracts.md defines API fields."],
-                        "reason": "Contract boundary is explicit.",
-                    },
-                    "C3_ai_context_control": {
-                        "status": "pass",
-                        "confidence": 0.9,
-                        "evidence": ["No AI-owned context is present in this node."],
-                        "reason": "AI context is not a blocker.",
-                    },
-                    "C4_verifiability": {
-                        "status": "warn",
-                        "confidence": 0.86,
-                        "evidence": ["testcase.feature lacks a precise 200ms acceptance probe."],
-                        "reason": "Testcase owner must add the missing performance probe.",
-                    },
-                    "C5_risk_decomposition": {
-                        "status": "pass",
-                        "confidence": 0.9,
-                        "evidence": ["risks.md has no unresolved high risk."],
-                        "reason": "No decomposition-caused risk remains.",
-                    },
-                },
-                "recommended_decision": "NEEDS_REFINEMENT",
-                "summary": "Needs testcase refinement only.",
-                "refinement_routes": [
-                    {
-                        "target": "testcase",
-                        "criterion": "C4_verifiability",
-                        "reason": "The performance oracle belongs in testcase evidence.",
-                        "actions": ["Add a tagged scenario that measures the 200ms upload acknowledgement."],
-                        "evidence": ["testcase.feature lacks a precise 200ms acceptance probe."],
-                    }
-                ],
-                "suggested_next_action": {"type": "refine_spec", "children": [], "notes": []},
+                "llm_judgement": judgement,
+                "recommended_decision": "STOP_LAYERING",
+                "summary": "No useful child boundary remains.",
             },
             ensure_ascii=True,
         ),
@@ -512,19 +627,13 @@ def test_llm_refinement_routes_preserve_target_specific_feedback(tmp_path: Path)
     )
 
     report = leaf_gate.build_report(node_dir, llm_path)
-    routes = report["refinement_routes"]
-
-    assert report["decision"] == "NEEDS_REFINEMENT"
-    assert any(route["target"] == "testcase" for route in routes)
-    assert not any(
-        route["target"] == "owner_decision" and route["criterion"] == "C4_verifiability"
-        for route in routes
-    )
-    testcase_markdown = leaf_gate.render_refinement_markdown(report, target="testcase")
-    assert "200ms upload acknowledgement" in testcase_markdown
+    assert report["decision"] == "STOP_LAYERING"
+    assert report["phase"] == "FINAL"
+    assert report["next_action"]["type"] == "vibecode"
+    assert "refinement_routes" not in report
 
 
-def test_main_writes_split_refinement_markdown_next_to_json_output(tmp_path: Path, monkeypatch) -> None:
+def test_main_writes_input_error_without_refinement_outputs(tmp_path: Path, monkeypatch) -> None:
     leaf_gate = _load_leaf_gate_module()
     node_dir = tmp_path / "L1-mixed-feedback"
     _write_mixed_feedback_node(node_dir)
@@ -532,30 +641,12 @@ def test_main_writes_split_refinement_markdown_next_to_json_output(tmp_path: Pat
 
     monkeypatch.setattr(sys, "argv", ["run_leaf_gate.py", str(node_dir), "--output", str(output)])
 
-    assert leaf_gate.main() == 0
+    assert leaf_gate.main() == 2
     assert output.exists()
-    assert json.loads(output.read_text(encoding="utf-8"))["decision"] == "NEEDS_REFINEMENT"
-    index = node_dir / "leaf-gate.refinement.md"
-    architecture = node_dir / "leaf-gate.refinement.architecture.md"
-    testcase = node_dir / "leaf-gate.refinement.testcase.md"
-    assert index.exists()
-    assert architecture.exists()
-    assert testcase.exists()
-
-    index_text = index.read_text(encoding="utf-8")
-    assert "leaf-gate.refinement.architecture.md" in index_text
-    assert "leaf-gate.refinement.testcase.md" in index_text
-    assert "side_effects" not in index_text
-    assert "REQ-D002" not in index_text
-
-    architecture_text = architecture.read_text(encoding="utf-8")
-    assert "architecture/output/06-interface-contracts.md" in architecture_text
-    assert "side_effects" in architecture_text
-    assert "testcase.feature" not in architecture_text
-    assert "REQ-D002" not in architecture_text
-
-    testcase_text = testcase.read_text(encoding="utf-8")
-    assert "testcase.feature" in testcase_text
-    assert "REQ-D002" in testcase_text
-    assert "architecture/output/06-interface-contracts.md" not in testcase_text
-    assert "side_effects" not in testcase_text
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "INPUT_ERROR"
+    assert payload["error"] == "UPSTREAM_VALIDATION_INCOMPLETE"
+    assert "decision" not in payload
+    assert not (node_dir / "leaf-gate.refinement.md").exists()
+    assert not (node_dir / "leaf-gate.refinement.architecture.md").exists()
+    assert not (node_dir / "leaf-gate.refinement.testcase.md").exists()

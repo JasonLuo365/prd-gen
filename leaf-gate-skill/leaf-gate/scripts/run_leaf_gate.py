@@ -39,8 +39,28 @@ CRITERIA = [
     "C5_risk_decomposition",
 ]
 
+FINAL_DECISIONS = {"CONTINUE_LAYERING", "STOP_LAYERING"}
+
 CURRENT_REQ_ID_RE = r"(?:REQ|NFR|UC|QAS)-(?:[A-Z]+)?\d{3,}"
 TRACE_TAG_ID_RE = r"(?:REQ|NFR|UC|QAS|MET)-(?:[A-Z]+)?\d{3,}"
+
+
+class LeafGateInputError(ValueError):
+    """The upstream node is not ready for a layering decision."""
+
+    def __init__(self, code: str, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    def to_report(self) -> Dict[str, Any]:
+        return {
+            "status": "INPUT_ERROR",
+            "error": self.code,
+            "message": self.message,
+            "details": self.details,
+        }
 
 
 @dataclass
@@ -53,6 +73,11 @@ class ArtifactSet:
     risks: Optional[Path]
     architecture_files: List[Path] = field(default_factory=list)
     architecture_validation: Optional[Path] = None
+    architecture_validation_files: List[Path] = field(default_factory=list)
+    architecture_supporting_files: List[Path] = field(default_factory=list)
+    architecture_remediation_files: List[Path] = field(default_factory=list)
+    architecture_manifest: Optional[Path] = None
+    architecture_selection: str = ""
     warnings: List[str] = field(default_factory=list)
 
 
@@ -270,47 +295,176 @@ def existing_file(node_dir: Path, path: Optional[Path]) -> Optional[Path]:
     return candidate if candidate and candidate.exists() and candidate.is_file() else None
 
 
-def markdown_files(path: Path) -> List[Path]:
-    return sorted(file for file in path.glob("*.md") if file.is_file())
+ARCHITECTURE_SUFFIXES = {".md", ".markdown", ".json", ".yaml", ".yml"}
+MANIFEST_NAMES = {"readme", "index", "manifest", "contents", "目录", "索引", "清单"}
 
 
-def architecture_dir_artifacts(path: Path) -> Tuple[Path, List[Path], Optional[Path]]:
-    output_dir = path / "output"
-    source_dir = output_dir if output_dir.exists() and output_dir.is_dir() else path
-    files = markdown_files(source_dir)
-    validation = path / "validation-report.md"
-    if validation.exists() and validation.is_file() and validation not in files:
-        files.append(validation)
-    return source_dir, files, validation if validation.exists() else None
+def architecture_files_in(path: Path, recursive: bool = False) -> List[Path]:
+    iterator = path.rglob("*") if recursive else path.glob("*")
+    return sorted(
+        file
+        for file in iterator
+        if file.is_file()
+        and file.suffix.lower() in ARCHITECTURE_SUFFIXES
+        and not file.name.startswith("leaf-gate.")
+    )
+
+
+def is_manifest(path: Path) -> bool:
+    stem = path.stem.lower()
+    return stem in MANIFEST_NAMES or bool(re.search(r"(?:^|[-_])manifest$", stem))
+
+
+def manifest_links(manifest: Path, package_root: Path) -> List[Path]:
+    links: List[Path] = []
+    manifest_text = read_text(manifest)
+    targets = re.findall(r"\[[^\]]+\]\(([^)]+)\)", manifest_text)
+    targets.extend(
+        match.group(1)
+        for match in re.finditer(
+            r"(?:^|[\s:\"'])[- ]*([A-Za-z0-9_./\\-]+\.(?:md|markdown|json|ya?ml))(?=$|[\s,\"'])",
+            manifest_text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    )
+    for target in targets:
+        target = target.strip().strip("<>").split("#", 1)[0]
+        if not target or re.match(r"^[a-z]+://", target, flags=re.IGNORECASE):
+            continue
+        candidate = manifest.parent / target
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(package_root.resolve())
+        except ValueError:
+            continue
+        if candidate.is_file() and candidate.suffix.lower() in ARCHITECTURE_SUFFIXES:
+            links.append(candidate)
+    return sorted(set(links))
+
+
+def remediation_artifact(path: Path, text: str = "") -> bool:
+    value = f"{path.name}\n{text[:500]}"
+    return bool(
+        re.search(
+            r"remediation|modification[-_ ]plan|change[-_ ]plan|整改|修改方案|修正方案|改进计划",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def validation_artifact(path: Path, text: str = "") -> bool:
+    value = f"{path.name}\n{text[:500]}"
+    return bool(
+        re.search(
+            r"validation[-_ ]report|architecture[-_ ]validation|verification[-_ ]report|review[-_ ]report|架构验证|验证报告|评审报告|验收报告",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def package_semantic_score(path: Path, files: List[Path], linked: List[Path]) -> int:
+    sample = "\n".join(f"{file.name}\n{read_text(file)[:1200]}" for file in files[:20])
+    concepts = (
+        r"system overview|系统概览|系统上下文",
+        r"runtime|运行时|时序",
+        r"data|consistency|数据|一致性",
+        r"interface|contract|接口|契约",
+        r"decision|technology|决策|技术",
+        r"deployment|部署",
+    )
+    score = len(linked) * 12 + sum(3 for pattern in concepts if re.search(pattern, sample, re.IGNORECASE))
+    if path.name.lower() in {"output", "final", "deliverables", "package", "交付", "最终输出"}:
+        score += 4
+    return score + min(len(files), 10)
+
+
+def select_architecture_package(path: Path) -> Tuple[Path, List[Path], Optional[Path], str]:
+    candidates: List[Tuple[int, Path, List[Path], Optional[Path], List[Path]]] = []
+    directories = [path] + sorted(directory for directory in path.rglob("*") if directory.is_dir())
+    for directory in directories:
+        direct_files = architecture_files_in(directory)
+        if not direct_files:
+            continue
+        manifests = [file for file in direct_files if is_manifest(file)]
+        manifest = manifests[0] if manifests else None
+        linked = manifest_links(manifest, path) if manifest else []
+        usable = [file for file in direct_files if not remediation_artifact(file, read_text(file)) and not validation_artifact(file, read_text(file))]
+        linked = [
+            file
+            for file in linked
+            if not remediation_artifact(file, read_text(file)) and not validation_artifact(file, read_text(file))
+        ]
+        if not usable:
+            continue
+        candidates.append((package_semantic_score(directory, usable, linked), directory, usable, manifest, linked))
+
+    if not candidates:
+        return path, [], None, "empty-directory"
+    _, source_dir, usable, manifest, linked = max(candidates, key=lambda item: (item[0], -len(item[1].parts)))
+    if linked:
+        primary = linked
+        selection = "manifest-links"
+    else:
+        primary = [file for file in usable if not is_manifest(file)] or usable
+        selection = "semantic-package"
+    if manifest and manifest not in primary:
+        primary = [manifest, *primary]
+    return source_dir, sorted(set(primary)), manifest, selection
+
+
+def architecture_dir_artifacts(
+    path: Path,
+) -> Tuple[Path, List[Path], List[Path], List[Path], List[Path], Optional[Path], str]:
+    source_dir, primary, manifest, selection = select_architecture_package(path)
+    all_files = architecture_files_in(path, recursive=True)
+    validation: List[Path] = []
+    remediation: List[Path] = []
+    for file in all_files:
+        text = read_text(file)
+        if remediation_artifact(file, text):
+            remediation.append(file)
+        elif validation_artifact(file, text):
+            validation.append(file)
+    supporting = [file for file in all_files if file not in primary and file not in validation and file not in remediation]
+    return source_dir, primary, validation, supporting, remediation, manifest, selection
 
 
 def find_architecture_artifacts(
     node_dir: Path, architecture_path: Optional[Path] = None
-) -> Tuple[Optional[Path], List[Path], Optional[Path]]:
+) -> Tuple[Optional[Path], List[Path], List[Path], List[Path], List[Path], Optional[Path], str]:
     explicit = resolve_path(node_dir, architecture_path)
     if explicit:
         if explicit.is_file():
-            return explicit, [explicit], None
+            return explicit, [explicit], [], [], [], None, "explicit-file"
         if explicit.is_dir():
-            source_dir, files, validation = architecture_dir_artifacts(explicit)
-            return source_dir, files, validation
-        return None, [], None
+            return architecture_dir_artifacts(explicit)
+        return None, [], [], [], [], None, "not-found"
 
     architecture_file = find_first(
         node_dir,
         ["architecture.yaml", "architecture.yml", "architecture.json", "architecture.md"],
-        ["*architecture*.yaml", "*architecture*.yml", "*architecture*.json", "*architecture*.md", "*arch*.md"],
+        [],
     )
     if architecture_file:
-        return architecture_file, [architecture_file], None
+        return architecture_file, [architecture_file], [], [], [], None, "conventional-file"
 
     for name in ("architecture", "output"):
         architecture_dir = node_dir / name
         if architecture_dir.exists() and architecture_dir.is_dir():
-            source_dir, files, validation = architecture_dir_artifacts(architecture_dir)
+            source_dir, files, validation, supporting, remediation, manifest, selection = architecture_dir_artifacts(architecture_dir)
             if files:
-                return source_dir, files, validation
-    return None, [], None
+                return source_dir, files, validation, supporting, remediation, manifest, selection
+
+    architecture_file = find_first(
+        node_dir,
+        [],
+        ["*architecture*.yaml", "*architecture*.yml", "*architecture*.json", "*architecture*.md", "*arch*.md"],
+    )
+    if architecture_file:
+        return architecture_file, [architecture_file], [], [], [], None, "matched-file"
+    return None, [], [], [], [], None, "not-found"
 
 
 def find_artifacts(
@@ -322,7 +476,16 @@ def find_artifacts(
     risks_path: Optional[Path] = None,
 ) -> ArtifactSet:
     warnings: List[str] = []
-    architecture, architecture_files, architecture_validation = find_architecture_artifacts(node_dir, architecture_path)
+    (
+        architecture,
+        architecture_files,
+        architecture_validation_files,
+        architecture_supporting_files,
+        architecture_remediation_files,
+        architecture_manifest,
+        architecture_selection,
+    ) = find_architecture_artifacts(node_dir, architecture_path)
+    architecture_validation = architecture_validation_files[0] if architecture_validation_files else None
     prd = existing_file(node_dir, prd_path) if prd_path else find_first(node_dir, ["prd.md", "PRD.md"], ["*prd*.md", "*PRD*.md"])
     feature = existing_file(node_dir, feature_path) if feature_path else find_first(node_dir, ["testcase.feature"], ["*.feature"])
     traceability = (
@@ -361,6 +524,11 @@ def find_artifacts(
         risks=risks,
         architecture_files=architecture_files,
         architecture_validation=architecture_validation,
+        architecture_validation_files=architecture_validation_files,
+        architecture_supporting_files=architecture_supporting_files,
+        architecture_remediation_files=architecture_remediation_files,
+        architecture_manifest=architecture_manifest,
+        architecture_selection=architecture_selection,
         warnings=warnings,
     )
 
@@ -709,14 +877,24 @@ def detect_deferred_requirements(prd_text: str, feature_text: str) -> set[str]:
         if re.search(r"deferred|延期|未进入|缺少确定|未冻结|不生成", line, flags=re.IGNORECASE):
             deferred.update(re.findall(rf"\b{CURRENT_REQ_ID_RE}\b", line))
 
-    in_could_have = False
+    in_deferred_section = False
     for line in prd_text.splitlines():
         heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
         if heading:
             title = heading.group(1).strip().lower()
-            in_could_have = "could have" in title
+            in_deferred_section = bool(
+                re.search(
+                    r"could have|future backlog|documented exclusions?|out[-_ ]of[-_ ]version|未来|后续版本|范围外|明确排除",
+                    title,
+                    flags=re.IGNORECASE,
+                )
+            )
             continue
-        if in_could_have:
+        if in_deferred_section or re.search(
+            r"out[-_ ]of[-_ ]version|release_scope\s*[:=]\s*(?:future|excluded)|\|\s*(?:future|out_of_version|excluded|deferred)\s*\|",
+            line,
+            flags=re.IGNORECASE,
+        ):
             deferred.update(re.findall(rf"\b{CURRENT_REQ_ID_RE}\b", line))
     return deferred
 
@@ -854,7 +1032,8 @@ def architecture_evidence(
         matched_terms = [term for term in trace_terms if has_match(term, text, profile)]
         boundary_hits = [term for term in matched_terms if term in boundary_terms]
         marker = has_architecture_marker(text, profile)
-        if req_id in text:
+        explicit_refs = extract_explicit_requirement_refs(text)
+        if normalize_requirement_ref(req_id) in explicit_refs:
             strength = "strong"
         elif marker and boundary_hits and len(matched_terms) >= 2:
             strength = "strong"
@@ -869,6 +1048,8 @@ def architecture_evidence(
 
         if ranks[strength] > 0:
             shown_terms = ", ".join(matched_terms[:6])
+            if strength == "strong" and normalize_requirement_ref(req_id) in explicit_refs:
+                shown_terms = "explicit requirement allocation"
             references.append(f"{relative_to_node(path, node_dir)} ({strength}: {shown_terms})")
             all_matched_terms.update(matched_terms)
         if ranks[strength] > best_rank:
@@ -880,6 +1061,38 @@ def architecture_evidence(
         "strength": best_strength,
         "matched_terms": sorted(all_matched_terms),
     }
+
+
+def normalize_requirement_ref(value: str, default_prefix: str = "REQ") -> str:
+    match = re.fullmatch(r"(?:(REQ|NFR|FR|UC|QAS)-)?(D)?(\d{3,})", value.strip(), re.IGNORECASE)
+    if not match:
+        return value.upper()
+    prefix = (match.group(1) or default_prefix).upper()
+    derived = "D" if match.group(2) else ""
+    return f"{prefix}-{derived}{int(match.group(3)):03d}"
+
+
+def extract_explicit_requirement_refs(text: str) -> set[str]:
+    """Expand explicit current-layer references such as D001~D007 and NFR-D001~003."""
+    refs: set[str] = set()
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9])"
+        r"(?:(?P<prefix>REQ|NFR|FR|UC|QAS)-)?"
+        r"(?P<derived>D)?(?P<start>\d{3,})"
+        r"(?:\s*[~–—-]\s*(?:(?P<end_prefix>REQ|NFR|FR|UC|QAS)-)?"
+        r"(?P<end_derived>D)?(?P<end>\d{3,}))?",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(text):
+        prefix = (match.group("prefix") or match.group("end_prefix") or "REQ").upper()
+        derived = bool(match.group("derived") or match.group("end_derived"))
+        start = int(match.group("start"))
+        end = int(match.group("end")) if match.group("end") else start
+        if end < start or end - start > 999:
+            end = start
+        for number in range(start, end + 1):
+            refs.add(f"{prefix}-{'D' if derived else ''}{number:03d}")
+    return refs
 
 
 def build_traceability_text(artifacts: ArtifactSet, profile: Optional[ProjectProfile] = None) -> str:
@@ -1004,7 +1217,8 @@ def extract_validation_risk_rows(architecture_files: Iterable[Path], node_dir: P
 def build_risks_text(artifacts: ArtifactSet, profile: Optional[ProjectProfile] = None) -> str:
     traceability_text = build_traceability_text(artifacts, profile)
     rows = []
-    for item in extract_validation_risk_rows(artifacts.architecture_files, artifacts.node_dir):
+    risk_sources = [*artifacts.architecture_validation_files, *artifacts.architecture_files]
+    for item in extract_validation_risk_rows(risk_sources, artifacts.node_dir):
         mitigation = item["mitigation"]
         status_value = "open" if re.search(r"未来|待|未|TODO|TBD", mitigation, flags=re.IGNORECASE) else "mitigated"
         severity = "high" if re.search(r"高风险|不可逆|删除|合规", item["risk"]) else "medium"
@@ -1042,7 +1256,7 @@ def build_risks_text(artifacts: ArtifactSet, profile: Optional[ProjectProfile] =
         [
             "# Risks",
             "",
-            "> Generated by Leaf Gate prepare evidence from traceability gaps and architecture validation evidence.",
+            "> Generated by Leaf Gate prepare evidence from traceability gaps, the validated primary architecture, and optional validation evidence.",
             "",
             "| Risk | Impact | Severity | Status | Mitigation | Evidence |",
             "| --- | --- | --- | --- | --- | --- |",
@@ -1228,6 +1442,7 @@ def implementation_pack_text(
     prd_text: str,
     feature_text: str,
     architecture_files: Iterable[Path],
+    architecture_validation_files: Iterable[Path],
     traceability_text: str,
     risk_text: str,
 ) -> str:
@@ -1235,8 +1450,10 @@ def implementation_pack_text(
     wanted = ("contract", "interface", "接口", "契约", "data-model", "runtime", "validation")
     for path in architecture_files:
         name = path.name.lower()
-        if any(term in name for term in wanted):
-            selected.append(read_text(path))
+        text = read_text(path)
+        if any(term in name for term in wanted) or re.search(r"运行时|接口|契约|数据|一致性", text[:1200]):
+            selected.append(text)
+    selected.extend(read_text(path) for path in architecture_validation_files)
     return "\n".join(text for text in selected if text)
 
 
@@ -1341,7 +1558,14 @@ def static_checks(
     risks = risk_counts(risk_text, risk_context, profile)
     full_artifact_tokens = estimate_tokens(prd_text, feature_text, architecture_text, traceability_text, risk_text)
     implementation_pack_tokens = estimate_tokens(
-        implementation_pack_text(prd_text, feature_text, artifacts.architecture_files, traceability_text, risk_text)
+        implementation_pack_text(
+            prd_text,
+            feature_text,
+            artifacts.architecture_files,
+            artifacts.architecture_validation_files,
+            traceability_text,
+            risk_text,
+        )
     )
     token_estimate = implementation_pack_tokens
     open_questions = count_open_questions(prd_text)
@@ -1427,6 +1651,11 @@ def static_checks(
             "architecture": str(artifacts.architecture) if artifacts.architecture else None,
             "architecture_files": [str(path) for path in artifacts.architecture_files],
             "architecture_validation": str(artifacts.architecture_validation) if artifacts.architecture_validation else None,
+            "architecture_validation_files": [str(path) for path in artifacts.architecture_validation_files],
+            "architecture_supporting_files": [str(path) for path in artifacts.architecture_supporting_files],
+            "architecture_remediation_files": [str(path) for path in artifacts.architecture_remediation_files],
+            "architecture_manifest": str(artifacts.architecture_manifest) if artifacts.architecture_manifest else None,
+            "architecture_selection": artifacts.architecture_selection,
             "traceability": str(artifacts.traceability) if artifacts.traceability else None,
             "risks": str(artifacts.risks) if artifacts.risks else None,
             "missing": missing_artifacts,
@@ -1435,6 +1664,10 @@ def static_checks(
                 "traceability_source": "provided" if artifacts.traceability else "missing",
                 "risks_source": "provided" if artifacts.risks else "missing",
                 "architecture_package": str(artifacts.architecture) if artifacts.architecture else None,
+                "architecture_primary_count": len(artifacts.architecture_files),
+                "architecture_validation_count": len(artifacts.architecture_validation_files),
+                "architecture_supporting_count": len(artifacts.architecture_supporting_files),
+                "architecture_remediation_count": len(artifacts.architecture_remediation_files),
             },
         },
         "requirements": {
@@ -1486,248 +1719,104 @@ def load_thresholds(node_dir: Path, config_path: Optional[Path] = None) -> Dict[
     return load_leaf_gate_config(node_dir, config_path=config_path).thresholds
 
 
-def static_decision(report: Dict[str, Any]) -> Tuple[str, str]:
+def assert_layering_preconditions(report: Dict[str, Any]) -> None:
+    """Reject upstream completeness problems without turning them into layering decisions."""
+    problems: Dict[str, Any] = {}
     missing = report["artifacts"]["missing"]
     if missing:
-        return "NEEDS_REFINEMENT", f"Missing required artifacts: {', '.join(missing)}."
-    failed = [criterion for criterion in CRITERIA if report[criterion]["status"] == "fail"]
-    if failed:
-        c1_reason = report["C1_behavior_complexity"]["reason"]
-        broad_scope = "C1_behavior_complexity" in failed and not re.search(
-            r"missing testcase|no scenarios", c1_reason, flags=re.IGNORECASE
-        )
-        risk_classes = report["C5_risk_decomposition"].get("evidence", {}).get("high_risk_classes", [])
-        if broad_scope or (risk_classes and "C1_behavior_complexity" in failed):
-            return "NEEDS_DECOMPOSITION", f"Static checks failed: {', '.join(failed)}."
-        return "NEEDS_REFINEMENT", f"Static checks failed: {', '.join(failed)}."
-    return "STATIC_PASS_REQUIRES_LLM", "Static checks passed. Run LLM semantic judgement before LEAF_READY."
+        problems["missing_artifacts"] = missing
 
-
-def add_route(
-    routes: List[Dict[str, Any]],
-    target: str,
-    criterion: str,
-    reason: str,
-    actions: List[str],
-    evidence: Optional[List[str]] = None,
-) -> None:
-    routes.append(
-        {
-            "target": target,
-            "criterion": criterion,
-            "reason": reason,
-            "actions": actions,
-            "evidence": evidence or [],
-        }
-    )
-
-
-def refinement_routes(static_report: Dict[str, Any], llm_report: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Route Leaf Gate blockers to the artifact owner that can resolve them."""
-    routes: List[Dict[str, Any]] = []
-
-    missing = static_report["artifacts"]["missing"]
-    if missing:
-        artifact_targets = {
-            "feature": "testcase",
-            "architecture": "architecture",
-            "prd": "owner_decision",
-            "traceability": "testcase",
-            "risks": "owner_decision",
-        }
-        for artifact in missing:
-            target = artifact_targets.get(artifact, "owner_decision")
-            add_route(
-                routes,
-                target,
-                "artifacts",
-                f"Missing required artifact: {artifact}",
-                [f"Provide or regenerate `{artifact}` before rerunning Leaf Gate."],
-                [artifact],
-            )
-
-    c2 = static_report["C2_contract_boundary"]
-    missing_fields = c2.get("evidence", {}).get("missing_fields", [])
+    missing_fields = report["C2_contract_boundary"].get("evidence", {}).get("missing_fields", [])
     if missing_fields:
-        add_route(
-            routes,
-            "architecture",
-            "C2_contract_boundary",
-            "Architecture contract is missing required fields.",
-            [f"Add `{field}` to the relevant architecture contract." for field in missing_fields],
-            [f"missing_fields={missing_fields}"],
+        problems["missing_contract_fields"] = missing_fields
+
+    c3 = report["C3_ai_context_control"].get("evidence", {})
+    if c3.get("open_questions", 0):
+        problems["open_questions"] = c3["open_questions"]
+    if c3.get("todo_markers", 0):
+        problems["todo_markers"] = c3["todo_markers"]
+
+    c4 = report["C4_verifiability"].get("evidence", {})
+    for key in ("unmapped_requirements", "architecture_evidence_gaps", "untagged_scenarios"):
+        if c4.get(key):
+            problems[key] = c4[key]
+
+    unresolved_high = report["C5_risk_decomposition"].get("evidence", {}).get("unresolved_high_risks", 0)
+    if unresolved_high:
+        problems["unresolved_high_risks"] = unresolved_high
+
+    if problems:
+        raise LeafGateInputError(
+            "UPSTREAM_VALIDATION_INCOMPLETE",
+            "The PRD, testcase, and validated architecture package are not ready for a layering decision.",
+            problems,
         )
 
-    c4 = static_report["C4_verifiability"]
-    c4_evidence = c4.get("evidence", {})
-    unmapped = c4_evidence.get("unmapped_requirements", [])
-    if unmapped:
-        add_route(
-            routes,
-            "testcase",
-            "C4_verifiability",
-            "Current-layer requirements do not have testcase coverage.",
-            [f"Add or tag testcase scenarios for {req_id}." for req_id in unmapped],
-            [f"unmapped_requirements={unmapped}"],
-        )
 
-    untagged = c4_evidence.get("untagged_scenarios", [])
-    if untagged:
-        add_route(
-            routes,
-            "testcase",
-            "C4_verifiability",
-            "Scenarios are missing REQ/NFR trace tags.",
-            [f"Add a current-layer REQ/NFR tag to scenario `{scenario}`." for scenario in untagged],
-            [f"untagged_scenarios={untagged}"],
-        )
-
-    gaps = c4_evidence.get("architecture_evidence_gaps", [])
-    testcase_gaps = [gap for gap in gaps if gap.endswith(": missing_testcase")]
-    architecture_gaps = [
-        gap
-        for gap in gaps
-        if gap.endswith(": missing_architecture") or gap.endswith(": weak_evidence")
-    ]
-    if testcase_gaps:
-        add_route(
-            routes,
-            "testcase",
-            "C4_verifiability",
-            "Traceability rows are missing testcase evidence.",
-            [f"Add testcase coverage for {gap.split(':', 1)[0]}." for gap in testcase_gaps],
-            testcase_gaps,
-        )
-    if architecture_gaps:
-        add_route(
-            routes,
-            "architecture",
-            "C4_verifiability",
-            "Traceability rows are missing strong or medium architecture evidence.",
-            [f"Add explicit architecture evidence for {gap.split(':', 1)[0]}." for gap in architecture_gaps],
-            architecture_gaps,
-        )
-
-    c5 = static_report["C5_risk_decomposition"]
-    high_risks = c5.get("evidence", {}).get("unresolved_high_risks", 0)
-    if high_risks:
-        if testcase_gaps or unmapped:
-            add_route(
-                routes,
-                "testcase",
-                "C5_risk_decomposition",
-                "Open high risks are caused by missing testcase coverage.",
-                ["Close testcase coverage gaps, then rerun Leaf Gate to regenerate risks.md."],
-                [f"unresolved_high_risks={high_risks}"],
-            )
-        if architecture_gaps:
-            add_route(
-                routes,
-                "architecture",
-                "C5_risk_decomposition",
-                "Open high risks are caused by weak or missing architecture evidence.",
-                ["Strengthen architecture evidence, then rerun Leaf Gate to regenerate risks.md."],
-                [f"unresolved_high_risks={high_risks}"],
-            )
-        if not (testcase_gaps or unmapped or architecture_gaps):
-            add_route(
-                routes,
-                "owner_decision",
-                "C5_risk_decomposition",
-                "Open high risks remain that cannot be resolved by artifact routing alone.",
-                ["Confirm the risk disposition or provide an owner decision before rerunning Leaf Gate."],
-                [f"unresolved_high_risks={high_risks}"],
-            )
-
-    if llm_report:
-        explicit_llm_routes: set[str] = set()
-        for route in llm_report.get("refinement_routes") or []:
-            target = route.get("target")
-            criterion = route.get("criterion")
-            if target not in REFINEMENT_TARGETS or not criterion:
-                continue
-            explicit_llm_routes.add(str(criterion))
-            add_route(
-                routes,
-                target,
-                str(criterion),
-                route.get("reason") or "Semantic judgement requires artifact refinement.",
-                route.get("actions") or ["Resolve the semantic judgement issue, then rerun Leaf Gate."],
-                route.get("evidence") or [],
-            )
-
-        judgement = llm_report.get("llm_judgement", {})
-        for criterion, item in judgement.items():
-            item_status = str(item.get("status", "")).lower()
-            confidence = float(item.get("confidence", 0))
-            if (
-                item_status in {"warn", "fail"} or confidence < DEFAULT_THRESHOLDS["min_llm_confidence"]
-            ) and criterion not in explicit_llm_routes:
-                add_route(
-                    routes,
-                    "owner_decision",
-                    criterion,
-                    "Semantic judgement requires owner confirmation.",
-                    [item.get("reason") or f"Resolve semantic judgement issue for {criterion}."],
-                    item.get("evidence") or [],
-                )
-
-    return routes
+def static_layering_signal(report: Dict[str, Any]) -> Tuple[Optional[str], str]:
+    c1 = report["C1_behavior_complexity"]
+    c3 = report["C3_ai_context_control"]
+    decomposition_reasons: List[str] = []
+    if c1["status"] == "fail":
+        decomposition_reasons.append(c1["reason"])
+    c3_reason = c3.get("reason", "")
+    if re.search(r"context exceeds threshold", c3_reason, flags=re.IGNORECASE):
+        decomposition_reasons.append(c3_reason)
+    if decomposition_reasons:
+        return "CONTINUE_LAYERING", "; ".join(decomposition_reasons)
+    return None, "Static evidence is ready for semantic decomposition-gain judgement."
 
 
 def combine_with_llm(static_report: Dict[str, Any], llm_path: Path, thresholds: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
     try:
         llm_report = json.loads(llm_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        return "NEEDS_REFINEMENT", f"LLM judgement is not valid JSON: {exc}.", {}
+        raise LeafGateInputError("INVALID_SEMANTIC_JUDGEMENT", f"LLM judgement is not valid JSON: {exc}.") from exc
 
     judgement = llm_report.get("llm_judgement", {})
     missing = [criterion for criterion in CRITERIA if criterion not in judgement]
     if missing:
-        return "NEEDS_REFINEMENT", f"LLM judgement missing criteria: {', '.join(missing)}.", llm_report
+        raise LeafGateInputError(
+            "INVALID_SEMANTIC_JUDGEMENT",
+            f"LLM judgement is missing criteria: {', '.join(missing)}.",
+            {"missing_criteria": missing},
+        )
 
     low_confidence = []
     failed = []
-    warned = []
+    malformed = []
     for criterion in CRITERIA:
         item = judgement[criterion]
         item_status = str(item.get("status", "")).lower()
         confidence = float(item.get("confidence", 0))
         evidence = item.get("evidence") or []
         if not evidence:
-            failed.append(f"{criterion}: missing evidence")
+            malformed.append(f"{criterion}: missing evidence")
         if item_status == "fail":
             failed.append(criterion)
-        elif item_status == "warn":
-            warned.append(criterion)
         elif item_status != "pass":
-            failed.append(f"{criterion}: invalid status")
+            malformed.append(f"{criterion}: invalid status {item_status!r}")
         if confidence < thresholds["min_llm_confidence"]:
             low_confidence.append(criterion)
 
-    static_failed = [criterion for criterion in CRITERIA if static_report[criterion]["status"] == "fail"]
-    high_risks = static_report["C5_risk_decomposition"]["evidence"].get("unresolved_high_risks", 0)
-
-    if static_report["artifacts"]["missing"]:
-        return "NEEDS_REFINEMENT", "Required artifacts are missing.", llm_report
-    if static_failed:
-        if "C1_behavior_complexity" not in static_failed:
-            return "NEEDS_REFINEMENT", f"Static checks failed: {', '.join(static_failed)}.", llm_report
-        return "NEEDS_DECOMPOSITION", f"Static checks failed: {', '.join(static_failed)}.", llm_report
+    if low_confidence:
+        raise LeafGateInputError(
+            "INVALID_SEMANTIC_JUDGEMENT",
+            f"Semantic judgement confidence is below threshold: {', '.join(low_confidence)}.",
+            {"low_confidence": low_confidence},
+        )
+    recommended = llm_report.get("recommended_decision")
+    if recommended is not None and recommended not in FINAL_DECISIONS:
+        malformed.append(f"recommended_decision: invalid value {recommended!r}")
+    if malformed:
+        raise LeafGateInputError(
+            "INVALID_SEMANTIC_JUDGEMENT",
+            "Semantic judgement must use pass/fail with evidence and a binary recommendation.",
+            {"problems": malformed},
+        )
     if failed:
-        if any(str(item).startswith("C1_behavior_complexity") for item in failed):
-            return "NEEDS_DECOMPOSITION", f"LLM judgement failed: {', '.join(failed)}.", llm_report
-        return "NEEDS_REFINEMENT", f"LLM judgement failed: {', '.join(failed)}.", llm_report
-    if high_risks:
-        return "NEEDS_REFINEMENT", "Unresolved high risks remain.", llm_report
-    if low_confidence or warned:
-        parts = []
-        if low_confidence:
-            parts.append(f"low confidence: {', '.join(low_confidence)}")
-        if warned:
-            parts.append(f"warnings: {', '.join(warned)}")
-        return "NEEDS_REFINEMENT", "; ".join(parts), llm_report
-    return "LEAF_READY", "Static checks and LLM judgement passed.", llm_report
+        return "CONTINUE_LAYERING", f"Further layering has material benefit: {', '.join(failed)}.", llm_report
+    return "STOP_LAYERING", "Further layering has no material benefit.", llm_report
 
 
 def build_report(
@@ -1756,13 +1845,16 @@ def build_report(
         artifacts = prepare_evidence(artifacts, config.profile)
     artifacts.warnings.extend(config.warnings)
     checks = static_checks(artifacts, thresholds, config.profile)
-    decision, reason = static_decision(checks)
+    assert_layering_preconditions(checks)
+    decision, reason = static_layering_signal(checks)
     llm_report: Dict[str, Any] = {}
     if llm_path:
-        decision, reason, llm_report = combine_with_llm(checks, llm_path, thresholds)
-    routes = refinement_routes(checks, llm_report)
+        semantic_decision, semantic_reason, llm_report = combine_with_llm(checks, llm_path, thresholds)
+        if decision != "CONTINUE_LAYERING":
+            decision, reason = semantic_decision, semantic_reason
     return {
         "node_id": node_dir.name or node_dir.resolve().name,
+        "phase": "FINAL" if decision in FINAL_DECISIONS else "STATIC_EVIDENCE",
         "decision": decision,
         "summary": reason,
         "thresholds": thresholds,
@@ -1774,8 +1866,7 @@ def build_report(
         },
         "static_checks": checks,
         "llm_judgement": llm_report.get("llm_judgement"),
-        "refinement_routes": routes,
-        "next_action": next_action(decision, routes, checks),
+        "next_action": next_action(decision, checks),
     }
 
 
@@ -1796,173 +1887,19 @@ def candidate_decomposition(checks: Dict[str, Any]) -> List[str]:
 
 
 def next_action(
-    decision: str,
-    routes: Optional[List[Dict[str, Any]]] = None,
+    decision: Optional[str],
     checks: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if decision == "LEAF_READY":
+    if decision == "STOP_LAYERING":
         return {"type": "vibecode", "children": [], "notes": ["Proceed to implementation package."]}
-    if decision == "NEEDS_DECOMPOSITION":
+    if decision == "CONTINUE_LAYERING":
         children = candidate_decomposition(checks) if checks else []
         return {"type": "decompose", "children": children, "notes": ["Generate lower-layer PRDs for failed criteria."]}
-    targets = sorted({route["target"] for route in routes or []})
-    note = "Route refinement feedback to: " + ", ".join(targets) if targets else "Add or clarify required artifacts."
-    return {"type": "refine_spec", "children": [], "notes": [note]}
-
-
-def report_relative_path(path_value: Optional[str], node_dir_value: Optional[str]) -> Optional[str]:
-    if not path_value:
-        return None
-    path = Path(path_value)
-    node_dir = Path(node_dir_value) if node_dir_value else None
-    if node_dir:
-        try:
-            return str(path.relative_to(node_dir)).replace("\\", "/")
-        except ValueError:
-            pass
-    return str(path).replace("\\", "/")
-
-
-def route_suggested_files(target: str, report: Dict[str, Any]) -> List[str]:
-    artifacts = report.get("static_checks", {}).get("artifacts", {})
-    node_dir = artifacts.get("node_dir")
-    files: List[str] = []
-
-    def add(path_value: Optional[str]) -> None:
-        relative = report_relative_path(path_value, node_dir)
-        if relative and relative not in files:
-            files.append(relative)
-
-    add(artifacts.get("prd"))
-    if target == "architecture":
-        architecture_files = artifacts.get("architecture_files") or []
-        contract = next((path for path in architecture_files if Path(path).name == "06-interface-contracts.md"), None)
-        add(contract or artifacts.get("architecture"))
-        if artifacts.get("architecture_validation"):
-            add(artifacts.get("architecture_validation"))
-    elif target == "testcase":
-        add(artifacts.get("feature"))
-    else:
-        add(artifacts.get("risks"))
-        add(artifacts.get("traceability"))
-    add("leaf-gate.report.json")
-    return files
-
-
-REFINEMENT_TARGETS = ("architecture", "testcase", "owner_decision")
-
-
-def target_refinement_filename(target: str) -> str:
-    return f"leaf-gate.refinement.{target}.md"
-
-
-def ordered_route_targets(report: Dict[str, Any]) -> List[str]:
-    present = {route.get("target") for route in report.get("refinement_routes") or []}
-    return [target for target in REFINEMENT_TARGETS if target in present]
-
-
-def render_refinement_index_markdown(report: Dict[str, Any]) -> str:
-    targets = ordered_route_targets(report)
-    lines = [
-        "# Leaf Gate Refinement Index",
-        "",
-        f"Node: `{report.get('node_id', 'unknown')}`",
-        f"Decision: `{report.get('decision', 'unknown')}`",
-        f"Summary: {report.get('summary', '')}",
-        "",
-        "This index points each artifact owner to a target-specific Markdown handoff. Share only the matching target file with each owner.",
-        "",
-    ]
-    if not targets:
-        lines.extend(
-            [
-                "No target-specific refinement files were generated.",
-                "",
-                "Rerun Leaf Gate after any upstream artifact change.",
-                "",
-            ]
-        )
-        return "\n".join(lines)
-
-    lines.extend(["Target-specific files:", ""])
-    for target in targets:
-        lines.append(f"- `{target}`: `{target_refinement_filename(target)}`")
-    lines.extend(
-        [
-            "",
-            "Do not edit `traceability.md` or `risks.md` directly. Fix the upstream artifact, then rerun Leaf Gate.",
-            "",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def render_refinement_markdown(report: Dict[str, Any], target: Optional[str] = None) -> str:
-    routes = report.get("refinement_routes") or []
-    if target:
-        routes = [route for route in routes if route.get("target") == target]
-    header = "# Leaf Gate Refinement Suggestions"
-    if target:
-        header = f"{header}: {target}"
-    lines = [
-        header,
-        "",
-        f"Node: `{report.get('node_id', 'unknown')}`",
-        f"Decision: `{report.get('decision', 'unknown')}`",
-        f"Summary: {report.get('summary', '')}",
-        "",
-        "This file is generated from `leaf-gate.report.json` for artifact owners. Do not edit `traceability.md` or `risks.md` directly; fix the upstream PRD, architecture, testcase, or owner decision input, then rerun Leaf Gate.",
-        "",
-    ]
-
-    if not routes:
-        lines.extend(
-            [
-                "No refinement routes were produced.",
-                "",
-                "Rerun Leaf Gate after any upstream artifact change.",
-                "",
-            ]
-        )
-        return "\n".join(lines)
-
-    targets = [target] if target else REFINEMENT_TARGETS
-    for current_target in targets:
-        target_routes = [route for route in routes if route.get("target") == current_target]
-        if not target_routes:
-            continue
-        lines.extend([f"## {current_target}", "", "Suggested files to edit or review:"])
-        for path in route_suggested_files(current_target, report):
-            lines.append(f"- `{path}`")
-        lines.append("")
-        for index, route in enumerate(target_routes, start=1):
-            lines.extend(
-                [
-                    f"### {index}. {route.get('criterion', 'unknown')}",
-                    "",
-                    f"Reason: {route.get('reason', '')}",
-                    "",
-                    "Actions:",
-                ]
-            )
-            for action in route.get("actions") or ["Clarify or regenerate the upstream artifact."]:
-                lines.append(f"- {action}")
-            evidence = route.get("evidence") or []
-            if evidence:
-                lines.extend(["", "Evidence:"])
-                for item in evidence:
-                    lines.append(f"- `{item}`")
-            lines.append("")
-
-    lines.extend(
-        [
-            "## Rerun Leaf Gate",
-            "",
-            "After applying the changes, rerun Leaf Gate for this node and replace `leaf-gate.report.json`. The generated `traceability.md`, `risks.md`, and this Markdown suggestion file should be regenerated from the fixed upstream artifacts.",
-            "",
-        ]
-    )
-    return "\n".join(lines)
+    return {
+        "type": "semantic_judgement",
+        "children": [],
+        "notes": ["Run the LLM decomposition-gain judgement to obtain a final binary decision."],
+    }
 
 
 def render_decomposition_markdown(report: Dict[str, Any]) -> str:
@@ -2005,26 +1942,12 @@ def render_decomposition_markdown(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_refinement_markdown_files(report: Dict[str, Any], output_dir: Path) -> None:
+def write_decision_markdown_files(report: Dict[str, Any], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for target in REFINEMENT_TARGETS:
-        stale = output_dir / target_refinement_filename(target)
-        if stale.exists():
-            stale.unlink()
     decomposition = output_dir / "leaf-gate.decomposition.md"
     if decomposition.exists():
         decomposition.unlink()
-
-    (output_dir / "leaf-gate.refinement.md").write_text(
-        render_refinement_index_markdown(report),
-        encoding="utf-8",
-    )
-    for target in ordered_route_targets(report):
-        (output_dir / target_refinement_filename(target)).write_text(
-            render_refinement_markdown(report, target=target),
-            encoding="utf-8",
-        )
-    if report.get("decision") == "NEEDS_DECOMPOSITION":
+    if report.get("decision") == "CONTINUE_LAYERING":
         decomposition.write_text(render_decomposition_markdown(report), encoding="utf-8")
 
 
@@ -2046,23 +1969,32 @@ def main() -> int:
     if not args.node_dir.exists() or not args.node_dir.is_dir():
         raise SystemExit(f"Node directory does not exist: {args.node_dir}")
 
-    report = build_report(
-        args.node_dir,
-        args.llm_judgement,
-        prepare=not args.skip_prepare,
-        prd_path=args.prd,
-        feature_path=args.feature,
-        architecture_path=args.architecture,
-        traceability_path=args.traceability,
-        risks_path=args.risks,
-        config_path=args.config,
-        profile_path=args.profile,
-    )
+    try:
+        report = build_report(
+            args.node_dir,
+            args.llm_judgement,
+            prepare=not args.skip_prepare,
+            prd_path=args.prd,
+            feature_path=args.feature,
+            architecture_path=args.architecture,
+            traceability_path=args.traceability,
+            risks_path=args.risks,
+            config_path=args.config,
+            profile_path=args.profile,
+        )
+    except LeafGateInputError as exc:
+        error_payload = json.dumps(exc.to_report(), ensure_ascii=False, indent=2) + "\n"
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(error_payload, encoding="utf-8")
+        else:
+            print(error_payload, end="")
+        return 2
     payload = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload + "\n", encoding="utf-8")
-        write_refinement_markdown_files(report, args.output.parent)
+        write_decision_markdown_files(report, args.output.parent)
     else:
         print(payload)
     return 0

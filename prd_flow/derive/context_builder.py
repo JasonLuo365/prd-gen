@@ -70,6 +70,7 @@ def build_derive_context(
     resolved_granularity = module.get("granularity", arch_result.get("target_granularity", target_granularity))
     catalog = extract_architecture_catalog(architecture_package_path, resolved_granularity)
     units = catalog.get("units", []) or [module]
+    architecture_excluded_ids = set(catalog.get("excluded_requirement_refs", []))
     target_owner = _owner_name(module_name, units)
     catalog_module = next(
         (unit for unit in units if _normalize_keyword(unit.get("name", "")) == _normalize_keyword(module_name)),
@@ -105,6 +106,20 @@ def build_derive_context(
         units,
         acceptance_scenarios,
     )
+    _complete_atomic_aggregate_ownership(business_requirements, requirement_owners, units)
+    for requirement_id in architecture_excluded_ids:
+        requirement_owners[requirement_id] = set()
+    for requirement in [*business_requirements, *all_non_functional]:
+        parent_id = requirement.get("parent_req") or requirement.get("parent_nfr")
+        if parent_id:
+            inherited_owners = requirement_owners.get(requirement.get("id", ""), set())
+            requirement_owners.setdefault(parent_id, set()).update(inherited_owners)
+            clause_match = re.match(r"^CLAUSE-(\d{3})-", parent_id, re.IGNORECASE)
+            if clause_match:
+                requirement_owners.setdefault(
+                    f"REQ-{clause_match.group(1)}",
+                    set(),
+                ).update(inherited_owners)
     (
         architecture_owners,
         interface_parent_refs,
@@ -130,7 +145,12 @@ def build_derive_context(
         }
         for index, metric in enumerate(all_success_metrics, start=1)
     ]
-    metric_owners = _map_success_metric_owners(all_success_metrics, metric_items, units)
+    metric_owners = _map_success_metric_owners(
+        all_success_metrics,
+        metric_items,
+        units,
+        requirement_owners,
+    )
     for metric_item in metric_items:
         if not metric_owners.get(metric_item["id"]):
             metric_owners[metric_item["id"]] = set(unit_names)
@@ -142,6 +162,9 @@ def build_derive_context(
     ignored_control_nfrs = [nfr for nfr in all_non_functional if _is_derive_control_nfr(nfr)]
     for nfr in all_non_functional:
         if _is_derive_control_nfr(nfr):
+            continue
+        if nfr.get("id", "") in architecture_excluded_ids or nfr.get("release_scope", "current") != "current":
+            requirement_owners[nfr.get("id", "")] = set()
             continue
         if not requirement_owners.get(nfr.get("id", "")):
             requirement_owners[nfr.get("id", "")] = set(unit_names)
@@ -169,6 +192,8 @@ def build_derive_context(
         req
         for req in business_requirements
         if not requirement_owners.get(req.get("id", ""))
+        and req.get("id", "") not in architecture_excluded_ids
+        and req.get("release_scope", "current") == "current"
     ]
     uncovered_architecture_requirements = [
         req
@@ -180,6 +205,8 @@ def build_derive_context(
         for item in all_requirements + all_non_functional
         if item.get("id")
     }
+
+
     untraced_scenarios = [
         scenario
         for scenario in acceptance_scenarios
@@ -238,6 +265,7 @@ def build_derive_context(
         requirement_owners=requirement_owners,
         target_owner=target_owner,
         ignored_ids={item.get("id", "") for item in ignored_control_nfrs},
+        excluded_ids=architecture_excluded_ids,
     )
     requirement_surfaces = {
         req.get("id", ""): _detect_implementation_surfaces(
@@ -293,6 +321,7 @@ def build_derive_context(
         "coverage_complete": all(
             item["status"] != "unassigned" for item in coverage_ledger
         ),
+        "architecture_excluded_requirements": sorted(architecture_excluded_ids),
         "requirement_owners": {
             req_id: sorted(owners)
             for req_id, owners in requirement_owners.items()
@@ -331,9 +360,11 @@ def _build_coverage_ledger(
     requirement_owners: dict[str, set[str]],
     target_owner: str,
     ignored_ids: set[str],
+    excluded_ids: set[str] | None = None,
 ) -> list[dict]:
     """Describe where every parent obligation is expected to be inherited."""
     ledger: list[dict] = []
+    excluded_ids = excluded_ids or set()
     typed_items = (
         [("requirement", item) for item in business_requirements]
         + [("architecture_requirement", item) for item in architecture_requirements]
@@ -344,7 +375,9 @@ def _build_coverage_ledger(
         if not item_id or item_id in ignored_ids:
             continue
         owners = sorted(requirement_owners.get(item_id, set()))
-        if target_owner in owners:
+        if item_id in excluded_ids or item.get("release_scope", "current") != "current":
+            status = "excluded"
+        elif target_owner in owners:
             status = "inherited_by_target"
         elif owners:
             status = "assigned_to_other_targets"
@@ -383,13 +416,98 @@ def _build_ownership_map(
     return owners
 
 
+def _complete_atomic_aggregate_ownership(
+    requirements: list[dict],
+    owners: dict[str, set[str]],
+    units: list[dict],
+) -> None:
+    """Keep sibling atomic clauses together when architecture owns the parent capability."""
+    by_parent: dict[str, list[str]] = {}
+    for requirement in requirements:
+        parent_id = requirement.get("parent_req")
+        if parent_id:
+            by_parent.setdefault(parent_id, []).append(requirement.get("id", ""))
+    for requirement_ids in by_parent.values():
+        records = [
+            next((req for req in requirements if req.get("id") == item_id), {})
+            for item_id in requirement_ids
+        ]
+        parent_text = next((record.get("parent_text", "") for record in records if record.get("parent_text")), "")
+        scored = [
+            (_ownership_overlap_score(parent_text, unit), unit.get("name", ""))
+            for unit in units
+            if unit.get("name")
+        ]
+        best_score = max((score for score, _name in scored), default=0)
+        if best_score > 0:
+            sibling_owners = {name for score, name in scored if score == best_score}
+        else:
+            sibling_owners = set().union(*(owners.get(item_id, set()) for item_id in requirement_ids))
+        if not sibling_owners:
+            continue
+        for item_id in requirement_ids:
+            owners[item_id] = set(sibling_owners)
+
+    for requirement in requirements:
+        item_id = requirement.get("id", "")
+        if not item_id or owners.get(item_id) or requirement.get("parent_req"):
+            continue
+        scored = [
+            (_ownership_overlap_score(requirement.get("text", ""), unit), unit.get("name", ""))
+            for unit in units
+            if unit.get("name")
+        ]
+        best_score = max((score for score, _name in scored), default=0)
+        if best_score > 0:
+            owners[item_id] = {name for score, name in scored if score == best_score}
+        elif requirement.get("release_scope", "current") != "current":
+            owners[item_id] = {unit.get("name", "") for unit in units if unit.get("name")}
+
+
+def _ownership_overlap_score(text: str, unit: dict) -> int:
+    """Score architecture responsibility overlap for otherwise-unowned capabilities."""
+    unit_text = " ".join(
+        [
+            str(unit.get("name", "")),
+            str(unit.get("responsibility", "")),
+            *[str(item) for item in unit.get("included_contexts", [])],
+        ]
+    )
+    return len(_ownership_terms(text) & _ownership_terms(unit_text))
+
+
+def _ownership_terms(text: str) -> set[str]:
+    terms = {
+        token.casefold().rstrip("s")
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]+", text)
+        if len(token) >= 3 and token.casefold() not in {"system", "module", "amazon"}
+    }
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        for size in (2, 3, 4):
+            for index in range(len(chunk) - size + 1):
+                token = chunk[index:index + size]
+                if token not in _STOP_TERMS:
+                    terms.add(token)
+    return terms
+
+
 def _map_success_metric_owners(
     metrics: list[dict],
     metric_items: list[dict],
     units: list[dict],
+    requirement_owners: dict[str, set[str]],
 ) -> dict[str, set[str]]:
     owners: dict[str, set[str]] = {}
     for metric, metric_item in zip(metrics, metric_items):
+        verifies = metric.get("verifies", [])
+        if isinstance(verifies, str):
+            verifies = [verifies]
+        verified_owners = set().union(
+            *(requirement_owners.get(requirement_id, set()) for requirement_id in verifies)
+        ) if verifies else set()
+        if verified_owners:
+            owners[metric_item["id"]] = verified_owners
+            continue
         metric_text = " ".join(
             [metric.get("name", ""), metric.get("target", ""), metric.get("method", "")]
         )
@@ -699,6 +817,14 @@ def _requirement_matches_unit(req: dict, unit: dict, scenarios: list[dict]) -> b
     req_id = req.get("id", "")
     req_text = req.get("text", "")
     combined_text = req_text
+    parent_id = req.get("parent_req", "")
+    if not parent_id:
+        clause_match = re.match(r"CLAUSE-(\d{3})-", req_id, re.IGNORECASE)
+        parent_id = f"REQ-{clause_match.group(1)}" if clause_match else req_id
+    requirement_refs = set(unit.get("requirement_refs", []))
+    if req_id in requirement_refs or parent_id in requirement_refs:
+        return True
+
     responsibility = unit.get("responsibility", "")
     if _violates_module_ownership(combined_text, responsibility):
         return False
@@ -708,7 +834,7 @@ def _requirement_matches_unit(req: dict, unit: dict, scenarios: list[dict]) -> b
         for item in unit.get("evidence", [])
         if isinstance(item, dict)
     )
-    if req_id and req_id in evidence_text:
+    if (req_id and req_id in evidence_text) or (parent_id and parent_id in evidence_text):
         return True
 
     normalized_text = _normalize_keyword(combined_text)

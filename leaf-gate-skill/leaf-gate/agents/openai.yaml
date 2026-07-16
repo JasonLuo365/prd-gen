@@ -1,4 +1,4 @@
 interface:
   display_name: "Leaf Gate"
-  short_description: "Decide whether a layered PRD node is ready for vibecoding."
-  default_prompt: "Use $leaf-gate to decide whether this PRD node should be decomposed further or implemented."
+  short_description: "Decide whether a validated PRD node should continue or stop layering."
+  default_prompt: "Use $leaf-gate to return CONTINUE_LAYERING or STOP_LAYERING for this validated PRD node."

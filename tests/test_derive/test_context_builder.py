@@ -82,6 +82,50 @@ def test_build_derive_context_module_not_found():
         arch_path.unlink()
 
 
+def test_success_metric_follows_derived_nfr_parent_reference(tmp_path):
+    prd = tmp_path / "prd.md"
+    prd.write_text(
+        """---
+doc_id: PARENT-v1.0
+---
+# Requirements
+## Current Release — Functional Requirements
+### Must Have
+- [REQ-D001] alpha returns ranked results
+  - parent_req: CLAUSE-003-01
+
+## Current Release — Non-functional Requirements
+- [NFR-D001] alpha latency must be at most 3 seconds
+  - parent_nfr: NFR-001
+
+# Success Metrics
+| ID | Name | Target | Method | Verifies |
+|---|---|---|---|---|
+| METRIC-001 | alpha latency | <=3 seconds | measure alpha requests | NFR-001 |
+| METRIC-002 | alpha ranking | >=95% | measure alpha rankings | REQ-003 |
+""",
+        encoding="utf-8",
+    )
+    architecture = tmp_path / "architecture.yaml"
+    architecture.write_text(
+        """doc_id: PARENT-ARCH-v1.0
+modules:
+  - name: alpha
+  - name: beta
+""",
+        encoding="utf-8",
+    )
+
+    alpha = build_derive_context(prd, architecture, "alpha")
+    beta = build_derive_context(prd, architecture, "beta")
+
+    assert [metric["id"] for metric in alpha["related_success_metrics"]] == [
+        "METRIC-001",
+        "METRIC-002",
+    ]
+    assert beta["related_success_metrics"] == []
+
+
 def test_build_derive_context_detects_orphan_requirements():
     """Requirements mentioning no module should appear in orphan_requirements."""
     prd_content = """---

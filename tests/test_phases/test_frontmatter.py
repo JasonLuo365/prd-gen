@@ -82,12 +82,17 @@ def test_frontmatter_collect_derive_generates_correct_doc_id():
     assert result["parent_doc"] == "ECOMMERCE-PLATFORM-v1.0"
     assert result["parent_arch"] == "ECOMMERCE-PLATFORM-v1.0-ARCH"
     assert result["module_name"] == "payment_gateway"
-    assert result["interfaces"] == [{"name": "create_payment", "method": "POST"}]
-    assert result["dependencies"] == [{"module": "user_auth", "type": "internal"}]
+    assert result["interface_refs"] == ["create_payment"]
+    assert result["dependency_refs"] == ["user_auth"]
+    assert result["event_refs"] == []
+    assert "interfaces" not in result
+    assert "dependencies" not in result
+    assert "events" not in result
     assert result["priority"] == "P1"
     assert result["author"] == "Bob"
     assert result["version"] == "1.0.0"
-    assert result["status"] == "draft"
+    assert result["status"] == "complete"
+    assert result["inheritance_complete"] is True
     assert "P1" in state.completed_phases
 
 
@@ -144,3 +149,39 @@ def test_frontmatter_collect_derive_defaults_parent_arch():
     )
 
     assert result["parent_arch"] == "ECOMMERCE-PLATFORM-v1.0-ARCH"
+
+
+def test_frontmatter_collect_derive_emits_stable_compact_refs():
+    state = SessionState(
+        session_id="sess_004",
+        mode="derive",
+        current_phase="P1",
+        completed_phases=[],
+        draft_content={},
+        parent_context={},
+        target_module="recommendation",
+    )
+    phase = FrontmatterPhase(state)
+
+    result = phase.collect_derive(
+        parent_doc_id="ASSISTANT-v1.0",
+        parent_arch_id="ASSISTANT-v1.0-ARCH",
+        module_name="recommendation",
+        interfaces=[
+            {"contract_id": "IF-001", "name": "rank", "request": {"large": "record"}},
+            {"contract_id": "IF-001", "name": "rank_duplicate"},
+            {"name": "explain"},
+        ],
+        dependencies=[
+            {"name": "profile-store", "details": {"large": "record"}},
+            {"module": "policy-engine"},
+        ],
+        events=[
+            {"contract_id": "EV-001", "event_name": "ranking.completed"},
+            {"event_name": "explanation.created"},
+        ],
+    )
+
+    assert result["interface_refs"] == ["IF-001", "explain"]
+    assert result["dependency_refs"] == ["profile-store", "policy-engine"]
+    assert result["event_refs"] == ["EV-001", "explanation.created"]

@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from prd_flow.derive.parser import parse_parent_prd, extract_module_context
+from prd_flow.derive.parser import extract_architecture_catalog, extract_module_context, parse_parent_prd
 
 
 def test_parse_parent_prd():
@@ -116,6 +116,7 @@ def test_parse_parent_prd_preserves_derive_requirement_metadata(tmp_path: Path):
   - parent_req: ARCH:06-interface-contracts.md#UPLOAD
   - implementation_surfaces: [api_backend, database_migration]
   - related_reqs: [REQ-D001, REQ-D002]
+  - evidence_refs: [DEC-001, parent:REQ-001]
   - source_kind: architecture_interface
 """,
         encoding="utf-8",
@@ -127,6 +128,7 @@ def test_parse_parent_prd_preserves_derive_requirement_metadata(tmp_path: Path):
     assert requirement["parent_req"] == "ARCH:06-interface-contracts.md#UPLOAD"
     assert requirement["implementation_surfaces"] == ["api_backend", "database_migration"]
     assert requirement["related_reqs"] == ["REQ-D001", "REQ-D002"]
+    assert requirement["evidence_refs"] == ["DEC-001", "parent:REQ-001"]
 
 
 def test_parse_parent_prd_preserves_success_metrics(tmp_path: Path):
@@ -293,3 +295,115 @@ def test_parse_parent_prd_extracts_acceptance_contracts(tmp_path):
     assert parsed["requirements"][0]["requirement_kind"] == "atomic"
     assert parsed["acceptance_contracts"][0]["verifies"] == ["REQ-001"]
     assert parsed["acceptance_contracts"][0]["response"] == ["ranked Amazon products"]
+    assert parsed["acceptance_contracts"][0]["boundaries"] == [
+        {"condition": "no target-domain history", "response": "cross-domain profile"}
+    ]
+
+
+def test_parse_parent_prd_extracts_derived_acceptance_contract_ids(tmp_path):
+    parent = tmp_path / "parent.md"
+    parent.write_text(
+        """# Acceptance Contracts
+## D-AC-004
+- type: functional
+- verifies: [REQ-D004]
+- trigger: resolve candidates
+- response: candidates returned
+- observable_oracles: candidate list is visible
+
+## D-AC-NFR-001
+- type: non_functional
+- verifies: [NFR-D001]
+- trigger: measure latency
+- response: latency is recorded
+- observable_oracles: P95 is within target
+""",
+        encoding="utf-8",
+    )
+
+    contracts = parse_parent_prd(parent)["acceptance_contracts"]
+
+    assert [contract["id"] for contract in contracts] == ["D-AC-004", "D-AC-NFR-001"]
+
+
+def test_parse_acceptance_contract_preserves_semicolon_actions_in_one_response(tmp_path):
+    parent = tmp_path / "parent.md"
+    parent.write_text(
+        """# Acceptance Contracts
+## AC-004 Amazon candidates
+- verifies: [REQ-004]
+- boundaries: more than 50 candidates or missing fields -> process only the first 50; retain unverifiable candidates with a warning
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_parent_prd(parent)
+
+    assert parsed["acceptance_contracts"][0]["boundaries"] == [
+        {
+            "condition": "more than 50 candidates or missing fields",
+            "response": "process only the first 50; retain unverifiable candidates with a warning",
+        }
+    ]
+
+
+def test_recursive_architecture_package_exposes_direct_children_and_derived_refs(tmp_path):
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "architecture-manifest.yaml").write_text(
+        "artifact_inventory:\n  - 02-architecture-decomposition.md\n  - 03-state-and-data.md\n  - 04-contracts-and-runtime.md\n",
+        encoding="utf-8",
+    )
+    (architecture / "01-design-context.md").write_text(
+        "| Requirement | Disposition |\n|---|---|\n| REQ-D099 | out-of-scope |\n",
+        encoding="utf-8",
+    )
+    (architecture / "02-architecture-decomposition.md").write_text(
+        """# Architecture decomposition
+| child_id | 责任与所有权 | 排除 | 需求 | 依赖与存在理由 |
+|---|---|---|---|---|
+| `query-resolution` | 解析查询并拥有 QueryState。 | 不调用外部服务。 | D001~D003、NFR-D001 | profile；独立生命周期。 |
+| `candidate-workset` | 拥有候选工作集。 | 不负责排序。 | REQ-D004/D006-D008 | query；独立状态。 |
+""",
+        encoding="utf-8",
+    )
+    (architecture / "03-state-and-data.md").write_text(
+        """# State and data
+| 状态 | Owner child_id | 读者 | 生命周期 |
+|---|---|---|---|
+| `QueryState` | `query-resolution` | candidate-workset | request |
+""",
+        encoding="utf-8",
+    )
+    (architecture / "04-contracts-and-runtime.md").write_text(
+        """# Contracts
+```yaml
+contract_id: query.resolved.v1
+owner: query-resolution
+consumer: candidate-workset
+required_fields: [request_id, raw_query]
+produced_fields: [request_id, semantic_query]
+error_codes: [query_invalid]
+```
+""",
+        encoding="utf-8",
+    )
+
+    catalog = extract_architecture_catalog(architecture, "component")
+
+    assert [unit["name"] for unit in catalog["units"]] == [
+        "query-resolution",
+        "candidate-workset",
+    ]
+    query, candidates = catalog["units"]
+    assert query["requirement_refs"] == ["REQ-D001", "REQ-D002", "REQ-D003", "NFR-D001"]
+    assert candidates["requirement_refs"] == [
+        "REQ-D004",
+        "REQ-D006",
+        "REQ-D007",
+        "REQ-D008",
+    ]
+    assert query["interfaces"][0]["contract_id"] == "query.resolved.v1"
+    assert candidates["interfaces"][0]["ownership_role"] == "consumer"
+    assert query["data_assets"][0]["name"] == "QueryState"
+    assert catalog["excluded_requirement_refs"] == ["REQ-D099"]

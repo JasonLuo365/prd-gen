@@ -77,11 +77,18 @@ architecture/
 - `bounded_context`
 - `component`
 
-Derive 的首要职责是把父 PRD 的需求无损分发到子 PRD 集合。当前目标明确拥有的父需求、Gherkin、NFR、non-goal，以及前端/Web App、接口、数据库迁移、事件、外部适配器、Worker、运行时集成和观测义务会保留追踪关系并写入子 PRD。每次成功生成还会写出同名的 `*.coverage.json`：父层每项义务都会标记为 `inherited_by_target`、`assigned_to_other_targets` 或 `unassigned`。未分配项会令账本状态为 `allocation_incomplete` 并产生 warning，但不会阻断当前目标；`allocation_complete` 只表示父层义务都有预期子节点，不表示所有子 PRD 文件都已实际生成。输入无效、目标不存在或当前目标无法形成有效子 PRD时才阻断。
+Derive 的唯一职责是依据父架构的直属模块，把父 PRD 的功能需求、排除项、NFR、Acceptance Contract 和指标无损分发到子 PRD 集合。架构仅用于确定模块和归属，不生成新的产品需求。整层生成要求父层条目零遗漏；成功时每个直属模块只写一个 `prd.md`，失败时不写部分结果，也不默认生成索引、账本、错误草稿或审阅文件。
 
 ## Leaf Gate
 
-Leaf Gate 用于判断一个分层节点是否已经足够清晰，可以停止继续拆分并进入实现。
+Leaf Gate 只判断一个已经完成前置验证的节点是否还需要继续分层。它不负责修正 PRD、testcase 或架构；这些修正属于前置的“测试用例 Mock 架构验证”闭环。
+
+最终结果只有两种：
+
+- `CONTINUE_LAYERING`：继续生成下层节点。
+- `STOP_LAYERING`：不用继续分层，可以进入实现。
+
+输入不完整时返回 `INPUT_ERROR`，且不包含 `decision`。它是工具执行错误，不是第三种 Leaf Gate 结果。
 
 标准输入是一个节点目录：
 
@@ -94,35 +101,38 @@ node-id/
   risks.md
 ```
 
-也支持多文件架构包：
+也支持多文件架构包。当前架构生成器可能直接输出扁平最终包：
 
 ```text
 node-id/
   prd.md
   testcase.feature
   architecture/
-    output/
-      01-system-overview.md
-      02-module-partitioning.md
-      03-runtime-architecture.md
-      04-adr-summary.md
-      05-data-model.md
-      06-interface-contracts.md
-      07-technology-choices.md
-      08-deployment.md
-    validation-report.md
+    README.md                   # 可选的包索引/清单
+    <最终架构文档...>
 ```
 
-运行 Leaf Gate 时会先执行 prepare evidence：根据当前节点的 PRD、testcase 和架构包自动生成或刷新 `traceability.md` 与 `risks.md`，然后再进入静态检查。`architecture/output` 是主要架构证据；`architecture/validation-report.md` 会作为架构验证、追溯和风险证据一起读取。
+架构也可以是单文件或嵌套包。Leaf Gate 不固定文件数量、编号、语言、目录名或契约文件名：若存在 README/index/manifest/目录/索引/清单及其本地链接，则优先按清单确定最终包；否则根据系统上下文、运行时、数据与一致性、接口契约、决策和部署等语义选择候选包；非常规或有歧义的结构使用 `--architecture` 显式指定。
+
+架构产物分为四类：
+
+- `primary`：当前有效的最终架构包，可用于 C2 契约和 C4 架构追溯证明。
+- `validation`：可选的验证、评审或验收留档，用于风险和来源说明，但不是必需文件。
+- `remediation`：修改、整改或修正计划，只表示拟采取的动作，不能证明已经修改完成。
+- `supporting`：workbench、生成计划、假设、DDD 分析等支撑材料，默认不作为最终架构证明。
+
+稳定的输入契约是“架构已经通过前置 Mock 验证”，而不是“必须存在 validation-report.md”。验证过程可以已经合入扁平最终架构包，不留下独立报告。
+
+静态报告会记录架构角色清单。角色识别后，Leaf Gate 根据当前节点的 PRD、testcase 和最终架构包自动生成或刷新 `traceability.md` 与 `risks.md`。
 
 `traceability.md` 中的架构证据会标注强度：
 
 - `strong`：直接编号命中，或同时命中架构契约、边界/数值和需求关键词，算覆盖。
 - `medium`：命中明确模块/接口/事件和多个需求关键词，算覆盖。
-- `weak`：只有泛关键词或部分词命中，不算覆盖。
-- `none`：没有可用架构证据，不算覆盖。
+- `weak`：只有泛关键词或部分词命中，属于前置输入错误。
+- `none`：没有可用架构证据，属于前置输入错误。
 
-`weak` 和 `none` 会让 C4 失败，并返回 `NEEDS_REFINEMENT`，同时通过 `refinement_routes` 指向需要修正的上游产物。
+缺少契约字段、追溯缺口、TODO/TBD、开放问题、`weak` 或 `none` 都返回 `INPUT_ERROR`，不会被解释为“继续分层”。原有上游 Mock 验证流程负责处理这些问题。
 
 静态检查命令：
 
@@ -132,27 +142,17 @@ node-id/
   --output <node-dir>\leaf-gate.static.json
 ```
 
-使用 `--output` 时，Leaf Gate 会同时在同目录生成 `leaf-gate.refinement.md` 索引文件。详细修改建议会按责任方拆成 `leaf-gate.refinement.architecture.md`、`leaf-gate.refinement.testcase.md`、`leaf-gate.refinement.owner_decision.md`，只在对应责任方存在时生成。JSON 面向自动化读取，Markdown 面向架构、testcase 和人工决策责任方阅读。
+如果静态复杂度已经证明继续分层有明显收益，可以直接返回 `CONTINUE_LAYERING`。否则静态报告进入 `STATIC_EVIDENCE` 阶段，`decision` 为 `null`，需要结合 LLM 语义评审后产生最终二元结果。这个阶段不是第三种决策。
 
-Leaf Gate 不会只靠静态检查返回 `LEAF_READY`。静态检查之后还需要结合 LLM 语义评审，对五个标准给出证据：
+五项标准调整为：
 
 - C1 behavior complexity is controlled
-- C2 contract boundary is clear
-- C3 AI implementation context is controlled
-- C4 automatic verification is decidable
-- C5 residual risk is low and decomposition gain is low
+- C2 完整契约是否仍横跨多个独立语义边界
+- C3 继续分层是否能显著缩小实现上下文
+- C4 验证是否仍耦合多个可独立实现的行为
+- C5 继续分层的边际收益是否足够高
 
-最终决策只允许：
-
-- `LEAF_READY`
-- `NEEDS_DECOMPOSITION`
-- `NEEDS_REFINEMENT`
-
-`NEEDS_REFINEMENT` 会携带 `refinement_routes`，把修正反馈分给：
-
-- `architecture`
-- `testcase`
-- `owner_decision`
+Leaf Gate 不再生成 refinement 路由或 `leaf-gate.refinement.*.md`。当结果为 `CONTINUE_LAYERING` 时，可以生成 `leaf-gate.decomposition.md`，给出按行为、所有权、契约、一致性或风险边界划分的下层节点建议。
 
 ## Local Outputs
 
@@ -166,14 +166,12 @@ outputs/high-school-math-tutor/
     prd.md
     testcase.feature
     architecture/
-      output/
-      validation-report.md
+      README.md
+      <最终架构文档...>
     traceability.md      # Leaf Gate prepare evidence 生成
     risks.md             # Leaf Gate prepare evidence 生成
     leaf-gate.report.json
-    leaf-gate.refinement.md              # 修改建议索引
-    leaf-gate.refinement.architecture.md # 架构修正建议，仅在需要时生成
-    leaf-gate.refinement.testcase.md     # testcase 修正建议，仅在需要时生成
+    leaf-gate.decomposition.md # 仅 CONTINUE_LAYERING 时生成
   L1-answer-flow/
     prd.md
 ```

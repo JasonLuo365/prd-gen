@@ -39,12 +39,20 @@ def assemble_prd(draft_content: dict) -> str:
         )
         p1_data["release_scope_frozen"] = bool(p1_data.get("release_scope_frozen", False)) and scopes_resolved
         p1_data["oracle_blocked_count"] = len(oracle_gaps)
-        p1_data["ready_for_test_generation"] = (
-            p1_data["release_scope_frozen"]
-            and not oracle_gaps
-            and bool(p1_data.get("agent_review_passed", False))
-        )
-        p1_data["review_method"] = "independent_agent"
+        if p1_data.get("layer") == "derive":
+            p1_data["status"] = "complete"
+            p1_data["ready_for_test_generation"] = bool(
+                p1_data.get("inheritance_complete", False)
+            ) and not oracle_gaps
+            p1_data["review_method"] = "inheritance_allocation_gate"
+            p1_data.pop("agent_review_passed", None)
+        else:
+            p1_data["ready_for_test_generation"] = (
+                p1_data["release_scope_frozen"]
+                and not oracle_gaps
+                and bool(p1_data.get("agent_review_passed", False))
+            )
+            p1_data["review_method"] = "independent_agent"
         parts.append("---")
         parts.append(format_frontmatter(p1_data).strip())
         parts.append("---\n")
@@ -61,15 +69,15 @@ def assemble_prd(draft_content: dict) -> str:
         parts.append(format_requirements(p3_data))
         parts.append("")
 
-    # Phase 4: Acceptance Contracts (business oracles; never Gherkin)
-    p4_data = draft_content.get("P4", {})
-    if p4_data:
-        parts.append(format_acceptance(p4_data, p3_data))
-        parts.append("")
-
     # Phase 5: Success Metrics
     p5_data = draft_content.get("P5", {})
     if p5_data:
         parts.append(format_success_metrics(p5_data))
+        parts.append("")
+
+    # Phase 4: Acceptance Contracts (business oracles; never Gherkin)
+    p4_data = draft_content.get("P4", {})
+    if p4_data:
+        parts.append(format_acceptance(p4_data, p3_data))
 
     return "\n".join(parts)

@@ -7,7 +7,7 @@ description: Use when the user explicitly asks to generate, write, create, or de
 
 ## Purpose and Boundary
 
-Generate one Markdown PRD that is a complete, evidence-preserving input to the downstream test-generation skill.
+Generate one Markdown PRD or one complete layer of child PRDs as evidence-preserving inputs to the downstream test-generation skill.
 
 This skill owns:
 
@@ -178,20 +178,43 @@ python skills/prd-generation/scripts/prd_flow/main.py `
   --architecture-package <path> `
   --target-module <name> `
   --target-granularity <auto|deployable_module|bounded_context|component> `
-  --output <path>
+  --output-dir <product-output-root>
 ```
+
+Use explicit `--output <path>` instead when a single derived PRD must be written to a caller-selected file rather than the inferred layered structure.
+
+To derive every direct child declared by one architecture layer, use the full-layer command:
+
+```powershell
+python skills/prd-generation/scripts/prd_flow/main.py `
+  --derive-all `
+  --parent-prd <path> `
+  --architecture-package <path> `
+  --target-granularity <deployable_module|bounded_context|component> `
+  --output-dir <product-output-root>
+```
+
+Full-layer Derive writes only one child PRD per direct architecture child by default. `--output-dir` is the product output root, not the final layer directory. When the parent PRD path contains a layer-qualified directory such as `L0-root` or `L1-profile-intelligence`, Derive infers the next layer and writes `L1/L1-<child>/prd.md` for L0 children, or `L<n>/<parent-abbreviation>/L<n>-<parent-abbreviation>-<child>/prd.md` for deeper layers. It removes a shared child namespace that repeats the parent identity, such as `cfg-*`, `PI-*`, or `L1-PL-*`. If the parent layer cannot be inferred, preserve the legacy flat `L1-<child>/prd.md` behavior. Keep the allocation ledger in memory as a pre-generation correctness gate. For explicit diagnostics only, add `--allocation-report <path>` to write the ledger as JSON; this report is not a PRD deliverable or Leaf Gate evidence. Do not generate a layer index file.
 
 Legacy `--parent-architecture` may replace `--architecture-package`.
 
+Architecture inputs may be either a top-level system package or a recursive child package. Recursive packages may use `architecture-manifest.yaml`, `02-architecture-decomposition.md`, `03-state-and-data.md`, `04-contracts-and-runtime.md`, optional `00-machine-readable-contracts.md`, and `child-handoff.md`. Their `child_id` / next-layer `target_node_id` rows are direct children at `component` granularity even when the IDs do not end in `Component`. Compact allocations such as `D001-D003`, `REQ-D004/D006`, and `NFR-D001~003` map to current-layer IDs.
+
+When one parent Acceptance Contract spans requirements owned by different direct children, the architecture package must include `acceptance-contract-projections.yaml`. Each record identifies `target_module`, `parent_contract`, and either `mode: shared` (the complete parent behavior is intentionally shared integration context) or `mode: project` with a complete child-scoped contract. The backend treats this as declarative input; it must never read an existing child PRD as a hidden override. Missing or invalid projection data blocks the whole layer atomically.
+
 Derive rules:
 
-1. Parse atomic requirements, release scopes, Acceptance Contracts, NFR contracts, metrics, and evidence references from the parent PRD.
-2. Map only relevant clauses to the target architecture owner.
-3. Preserve parent semantics and MoSCoW priority. Child IDs reference parent IDs.
-4. A new child contract is allowed only when an explicit interface/event/data/metric contract entails the response and the evidence reference is recorded.
-5. Never create a success response, error response, boundary, threshold, or exclusion from generic architecture knowledge.
-6. If a current child clause has no complete oracle, block the derived PRD. Do not generate a placeholder scenario.
-7. Run the same Oracle Coverage Ledger and independent Agent review as Root mode.
+1. Use architecture only to enumerate direct child modules and determine ownership. Do not turn architecture descriptions into new product requirements.
+2. Allocate every current, in-scope parent functional clause, NFR, Acceptance Contract, and success metric to at least one direct child. Preserve future backlog and architecture-explicit out-of-scope/delegated items as exclusions without forcing a false child owner. Allow intentional multi-owner allocation.
+3. Generate exactly one `prd.md` per direct child. Preserve parent semantics, scope, priority, contracts, metrics, exclusions, and evidence; record the parent ID on every inherited requirement.
+4. Require the union of all child assignments to cover every parent item with no unknown IDs and no unassigned items. Fail without changing existing outputs if coverage is incomplete.
+5. Do not run SMART rewriting, independent Agent review, complexity budgets, layer-depth rules, leaf-candidate logic, test generation, architecture validation, or Mock validation in Derive.
+6. Do not generate drafts, indexes, allocation reports, or error files by default. `--allocation-report <path>` is an explicit diagnostic option only.
+7. Leave testcase generation, architecture generation, testcase-driven Mock validation, and Leaf Gate to their downstream stages.
+8. Require every generated direct child to contain at least one inherited current-release obligation. Require every inherited current requirement to retain a complete compatible parent Acceptance Contract, and require every inherited metric requirement reference to resolve to a child requirement ID. Any failure blocks the whole layer atomically and leaves existing outputs unchanged.
+9. Never special-case a product or module in code. Resolve split parent contracts only through the generic `acceptance-contract-projections.yaml` schema.
+
+Never create a success response, error response, boundary, threshold, or exclusion in Derive. Preserve only the corresponding parent content. Do not generate a placeholder scenario.
 
 ## Output Contract
 
@@ -207,9 +230,9 @@ Produce sections in this order:
 8. Oracle Coverage Ledger
 9. Future Backlog / Documented Exclusions
 10. Risks, Dependencies, and Blocking Questions
-11. Agent Review Report
+11. Agent Review Report (Root mode only)
 
-Frontmatter must include:
+Root frontmatter must include:
 
 ```yaml
 doc_type: prd
@@ -222,9 +245,13 @@ review_method: independent_agent
 
 Set readiness fields to false/nonzero for a draft. Never claim readiness merely because the Markdown was produced.
 
+Derive frontmatter must include `status: complete`, `inheritance_complete: true`, `ready_for_test_generation: true`, and `review_method: inheritance_allocation_gate`. It must not require `agent_review_passed`.
+
+Keep Derive frontmatter compact. Record architecture links only as ordered, deduplicated identifier lists named `interface_refs`, `dependency_refs`, and `event_refs`. Do not copy complete interface, dependency, or event objects into PRD frontmatter. Full architecture records remain authoritative in the architecture package and may still be used internally while deriving the PRD body.
+
 ### Terminal States and Handoff Gate
 
-Root and Derive have exactly two valid terminal artifact states:
+Root has exactly two valid terminal artifact states:
 
 | State | Filename | Required metadata | Downstream handoff |
 |---|---|---|---|
@@ -232,6 +259,8 @@ Root and Derive have exactly two valid terminal artifact states:
 | Ready for test generation | `*.md` | `status: approved`, `release_scope_frozen: true`, `ready_for_test_generation: true`, `oracle_blocked_count: 0`, `agent_review_passed: true` | allowed |
 
 The handoff gate is hard: do not recommend or run downstream test generation unless every ready-state field is satisfied. A syntactically complete document with unresolved business choices is still a draft. Renaming a draft or changing frontmatter does not satisfy the gate.
+
+Derive has one successful artifact state: `prd.md` with complete inheritance metadata. On invalid input or incomplete allocation, return an error and write no child PRD. Independent review is not a Derive terminal condition.
 
 ## Red Flags
 
@@ -245,7 +274,7 @@ Stop and resolve or block when any occurs:
 - exception/boundary names exist without required responses;
 - current behavior is moved to backlog only because its oracle is unknown;
 - Derive mode generates generic “success”, “normal operation”, or “expected result” behavior;
-- review is performed by the same generation pass without an independent review pass.
+- Root review is performed by the same generation pass without an independent review pass.
 
 ## Validation
 

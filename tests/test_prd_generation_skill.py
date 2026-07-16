@@ -44,6 +44,23 @@ def test_skill_forbids_oracle_invention_and_auto_scenarios():
     assert "Do not generate a placeholder scenario" in text
 
 
+def test_derive_blocks_empty_or_oracle_incomplete_children_atomically():
+    text = read_skill()
+    reference = REFERENCE.read_text(encoding="utf-8")
+    assert "at least one inherited current-release obligation" in text
+    assert "complete compatible parent Acceptance Contract" in text
+    assert "leaves existing outputs unchanged" in text
+    assert "unresolved metric reference" in reference
+
+
+def test_derive_uses_generic_declarative_contract_projections():
+    text = read_skill()
+    reference = REFERENCE.read_text(encoding="utf-8")
+    assert "acceptance-contract-projections.yaml" in text
+    assert "Never special-case a product or module in code" in text
+    assert "Existing child output is never used as projection evidence" in reference
+
+
 def test_skill_requires_independent_agent_review():
     text = read_skill()
     assert "independent Agent review" in text

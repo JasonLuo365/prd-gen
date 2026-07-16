@@ -222,6 +222,7 @@ class ArchitectureDiscoveryTests(unittest.TestCase):
             output_dir = node_dir / "output"
             output_dir.mkdir()
             (output_dir / "06-interface-contracts.md").write_text(
+                "REQ-001 REQ-002 REQ-003 REQ-004 REQ-005 REQ-006\n"
                 "- inputs: request\n"
                 "- outputs: response\n"
                 "- errors: error\n"
@@ -237,14 +238,14 @@ class ArchitectureDiscoveryTests(unittest.TestCase):
 
             report = run_leaf_gate.build_report(node_dir, None)
 
-            self.assertEqual(report["decision"], "NEEDS_DECOMPOSITION")
+            self.assertEqual(report["decision"], "CONTINUE_LAYERING")
             self.assertIn("split-composite-cross-requirement-scenarios", report["next_action"]["children"])
             self.assertGreater(report["static_checks"]["C1_behavior_complexity"]["evidence"]["scenario_points"], 2)
 
     def test_decomposition_markdown_is_written_for_decomposition(self) -> None:
         report = {
             "node_id": "node",
-            "decision": "NEEDS_DECOMPOSITION",
+            "decision": "CONTINUE_LAYERING",
             "summary": "too broad",
             "static_checks": {
                 "C1_behavior_complexity": {
@@ -265,7 +266,6 @@ class ArchitectureDiscoveryTests(unittest.TestCase):
                     "evidence": {"high_risk_classes": ["security_auth"]},
                 },
             },
-            "refinement_routes": [],
             "next_action": {
                 "type": "decompose",
                 "children": ["split-by-behavior-family"],
@@ -274,7 +274,7 @@ class ArchitectureDiscoveryTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            run_leaf_gate.write_refinement_markdown_files(report, out)
+            run_leaf_gate.write_decision_markdown_files(report, out)
             text = (out / "leaf-gate.decomposition.md").read_text(encoding="utf-8")
 
         self.assertIn("Leaf Gate Decomposition Suggestions", text)

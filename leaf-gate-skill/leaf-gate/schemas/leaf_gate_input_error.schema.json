@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Leaf Gate Input Error",
+  "type": "object",
+  "required": ["status", "error", "message", "details"],
+  "properties": {
+    "status": { "const": "INPUT_ERROR" },
+    "error": { "type": "string" },
+    "message": { "type": "string" },
+    "details": { "type": "object" }
+  },
+  "additionalProperties": false
+}

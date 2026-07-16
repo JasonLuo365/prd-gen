@@ -19,7 +19,28 @@ STANDARD_ARCH_FILES = [
     "06-interface-contracts.md",
     "07-technology-choices.md",
     "08-deployment.md",
+    "00-machine-readable-contracts.md",
+    "01-design-context.md",
+    "02-architecture-decomposition.md",
+    "03-state-and-data.md",
+    "04-contracts-and-runtime.md",
+    "05-local-decisions.md",
+    "child-handoff.md",
+    "architecture-manifest.yaml",
 ]
+
+ARCH_FILE_ALIASES = {
+    "02-module-partitioning.md": ("01-system-overview.md", "02-architecture-decomposition.md"),
+    "03-runtime-architecture.md": ("02-runtime-architecture.md", "04-contracts-and-runtime.md"),
+    "05-data-model.md": ("03-data-and-consistency.md", "03-state-and-data.md"),
+    "06-interface-contracts.md": (
+        "04-interface-contracts.md",
+        "04-contracts-and-runtime.md",
+        "00-machine-readable-contracts.md",
+    ),
+    "07-technology-choices.md": ("05-decisions-and-technology.md",),
+    "08-deployment.md": ("06-deployment.md",),
+}
 
 VALID_GRANULARITIES = {"auto", "deployable_module", "bounded_context", "component"}
 
@@ -93,13 +114,13 @@ def parse_parent_prd(path: Path) -> dict:
             continue
 
         metadata_match = re.match(
-            r"-\s+(parent_req|parent_nfr|source_kind|implementation_surfaces|related_reqs|release_scope|requirement_kind|scope_reason):\s*(.+)$",
+            r"-\s+(parent_req|parent_nfr|source_kind|implementation_surfaces|related_reqs|evidence_refs|release_scope|requirement_kind|scope_reason):\s*(.+)$",
             stripped,
         )
         if last_requirement is not None and line[:1].isspace() and metadata_match:
             key = metadata_match.group(1)
             value = metadata_match.group(2).strip()
-            if key in {"implementation_surfaces", "related_reqs"}:
+            if key in {"implementation_surfaces", "related_reqs", "evidence_refs"}:
                 value = value.strip("[]")
                 last_requirement[key] = [item.strip() for item in value.split(",") if item.strip()]
             else:
@@ -107,6 +128,12 @@ def parse_parent_prd(path: Path) -> dict:
             continue
 
         last_requirement = None
+
+    structured = _parse_structured_requirements(content)
+    if structured["requirements"]:
+        requirements = structured["requirements"]
+    if structured["non_functional"]:
+        non_functional = structured["non_functional"]
 
     return {
         "doc_id": frontmatter.get("doc_id", "UNKNOWN") if isinstance(frontmatter, dict) else "UNKNOWN",
@@ -122,6 +149,106 @@ def parse_parent_prd(path: Path) -> dict:
     }
 
 
+def _parse_structured_requirements(content: str) -> dict[str, list[dict[str, Any]]]:
+    """Parse aggregate REQ sections, atomic CLAUSE rows, NFR tables, and exclusions."""
+    requirements: list[dict[str, Any]] = []
+    non_functional: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    in_nfr_section = False
+    in_exclusion_section = False
+
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if re.match(r"^#\s+Current Release.*Non-functional Requirements", stripped, re.IGNORECASE):
+            in_nfr_section = True
+            in_exclusion_section = False
+            current = None
+            continue
+        if re.match(r"^#\s+Future Backlog", stripped, re.IGNORECASE):
+            in_exclusion_section = True
+            in_nfr_section = False
+            current = None
+            continue
+        if stripped.startswith("# "):
+            in_nfr_section = False
+            if not re.match(r"^#\s+Future Backlog", stripped, re.IGNORECASE):
+                in_exclusion_section = False
+
+        heading = re.match(r"^##\s+(REQ-[A-Z0-9-]+)\s+(.+)$", stripped, re.IGNORECASE)
+        if heading:
+            current = {
+                "id": heading.group(1).upper(),
+                "text": _clean_markdown(heading.group(2)),
+                "priority": "Must Have",
+                "release_scope": "current",
+                "requirement_kind": "aggregate",
+                "evidence_refs": [],
+            }
+            continue
+
+        if current is not None:
+            metadata = re.match(
+                r"^-\s+(priority|release_scope|requirement_kind|scope_reason|evidence_refs):\s*(.+)$",
+                stripped,
+                re.IGNORECASE,
+            )
+            if metadata:
+                key = metadata.group(1).lower()
+                value: Any = metadata.group(2).strip()
+                if key == "evidence_refs":
+                    value = [item.strip() for item in value.strip("[]").split(",") if item.strip()]
+                current[key] = value
+                continue
+
+        cells = _split_markdown_row(raw_line)
+        if len(cells) >= 2:
+            first = _clean_markdown(cells[0])
+            if re.fullmatch(r"CLAUSE-[A-Z0-9-]+", first, re.IGNORECASE) and current:
+                requirements.append(
+                    {
+                        "id": first.upper(),
+                        "text": _clean_markdown(cells[1]),
+                        "priority": current.get("priority", "Must Have"),
+                        "release_scope": current.get("release_scope", "current"),
+                        "requirement_kind": "atomic",
+                        "parent_req": current["id"],
+                        "parent_text": current.get("text", ""),
+                        "evidence_refs": list(current.get("evidence_refs", [])),
+                    }
+                )
+                continue
+            if in_nfr_section and re.fullmatch(r"NFR-[A-Z0-9-]+", first, re.IGNORECASE):
+                non_functional.append(
+                    {
+                        "id": first.upper(),
+                        "text": _clean_markdown(cells[1]),
+                        "release_scope": _clean_markdown(cells[2]) if len(cells) > 2 else "current",
+                        "requirement_kind": "atomic",
+                        "evidence_refs": [
+                            item.strip()
+                            for item in _clean_markdown(cells[3]).split(",")
+                            if item.strip()
+                        ] if len(cells) > 3 else [],
+                    }
+                )
+                continue
+            if in_exclusion_section and re.fullmatch(r"REQ-[A-Z0-9-]+(?:\s+.+)?", first, re.IGNORECASE):
+                req_id, _, title = first.partition(" ")
+                requirements.append(
+                    {
+                        "id": req_id.upper(),
+                        "text": title or req_id,
+                        "priority": _clean_markdown(cells[1]) if len(cells) > 1 else "Could Have",
+                        "release_scope": _clean_markdown(cells[2]) if len(cells) > 2 else "out_of_version",
+                        "scope_reason": _clean_markdown(cells[3]) if len(cells) > 3 else "Inherited parent exclusion",
+                        "requirement_kind": "aggregate",
+                        "evidence_refs": [_clean_markdown(cells[4])] if len(cells) > 4 else [],
+                    }
+                )
+
+    return {"requirements": requirements, "non_functional": non_functional}
+
+
 def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
     """Parse the explicit Acceptance Contracts Markdown section."""
     heading = re.search(r"^#\s+Acceptance Contracts\s*$", content, re.MULTILINE | re.IGNORECASE)
@@ -135,7 +262,11 @@ def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
     list_fields = {"verifies", "preconditions", "response", "observable_oracles", "boundaries", "exceptions", "exclusions", "evidence_refs"}
     for raw_line in section.splitlines():
         stripped = raw_line.strip()
-        contract_match = re.match(r"^##\s+((?:AC|NFR-AC)-[A-Z0-9-]+)\s*$", stripped, re.IGNORECASE)
+        contract_match = re.match(
+            r"^##\s+((?:D-)*(?:AC|NFR-AC)-[A-Z0-9-]+)(?:\s+.*)?$",
+            stripped,
+            re.IGNORECASE,
+        )
         if contract_match:
             if current:
                 contracts.append(current)
@@ -145,7 +276,9 @@ def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
         if current is None or not field_match:
             continue
         key, value = field_match.group(1), field_match.group(2).strip()
-        if key in list_fields:
+        if key in {"boundaries", "exceptions"}:
+            current[key] = _parse_condition_response_items(value)
+        elif key in list_fields:
             value = value.strip("[]")
             separator = "|" if "|" in value else ","
             current[key] = [item.strip() for item in value.split(separator) if item.strip()]
@@ -154,6 +287,38 @@ def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
     if current:
         contracts.append(current)
     return contracts
+
+
+def _parse_condition_response_items(value: str) -> list[Any]:
+    """Normalize explicit condition/response prose without adding new behavior."""
+    value = value.strip().strip("[]")
+    arrow_pattern = r"->|=>|→"
+    arrows = list(re.finditer(arrow_pattern, value))
+    if len(arrows) == 1:
+        condition = value[:arrows[0].start()].strip()
+        response = value[arrows[0].end():].strip()
+        if condition and response:
+            return [{"condition": condition, "response": response}]
+
+    # A response may itself contain semicolon-separated actions. Split only
+    # when the source contains multiple explicit condition/response pairs.
+    raw_items = (
+        [item.strip() for item in re.split(r"\s*[|；]\s*", value) if item.strip()]
+        if len(arrows) > 1
+        else [value]
+    )
+    items: list[Any] = []
+    for item in raw_items:
+        if any(separator in item for separator in ("->", "=>", "→")):
+            items.append(item)
+            continue
+        if "时" in item:
+            condition, response = item.split("时", 1)
+            if condition.strip() and response.strip():
+                items.append({"condition": condition.strip(), "response": response.strip()})
+                continue
+        items.append(item)
+    return items
 
 
 def _parse_gherkin_scenarios(content: str) -> list[dict[str, Any]]:
@@ -245,9 +410,24 @@ def _parse_success_metrics(content: str) -> list[dict[str, str]]:
         if len(cells) < 3:
             continue
         name = _clean_markdown(cells[0])
-        if name.casefold() in {"指标", "metric", "name"}:
+        if name.casefold() in {"指标", "id", "metric", "name"}:
             continue
-        metric_id = re.match(r"(MET-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", name, re.IGNORECASE)
+        metric_id = re.match(r"((?:MET|METRIC)-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", name, re.IGNORECASE)
+        if metric_id and len(cells) >= 5:
+            metrics.append(
+                {
+                    "id": metric_id.group(1).upper(),
+                    "name": _clean_markdown(cells[1]),
+                    "target": _clean_markdown(cells[2]),
+                    "method": _clean_markdown(cells[3]),
+                    "verifies": [
+                        item.strip()
+                        for item in re.split(r"[,|]", _clean_markdown(cells[4]))
+                        if item.strip()
+                    ],
+                }
+            )
+            continue
         metrics.append(
             {
                 "id": metric_id.group(1).upper() if metric_id else "",
@@ -384,9 +564,15 @@ def _read_directory_package(path: Path, explicit_readme: Path | None = None) -> 
     if not files and (path / "output").is_dir():
         return _read_directory_package(path / "output")
 
-    if not files:
-        for candidate in sorted(path.glob("*.md")):
+    for candidate in sorted(path.iterdir()):
+        if (
+            candidate.is_file()
+            and candidate.suffix.lower() in {".md", ".markdown", ".yaml", ".yml", ".json"}
+            and candidate.name not in files
+        ):
             files[candidate.name] = _read_text(candidate)
+
+    _apply_architecture_aliases(files)
 
     return {
         "kind": "markdown_package",
@@ -414,12 +600,24 @@ def _read_zip_package(path: Path) -> dict[str, Any]:
                     continue
                 files[member_path.name] = archive.read(member).decode("utf-8", errors="replace")
 
+    _apply_architecture_aliases(files)
+
     return {
         "kind": "markdown_package",
         "source_id": path.stem,
         "path": str(path),
         "files": files,
     }
+
+
+def _apply_architecture_aliases(files: dict[str, str]) -> None:
+    """Expose supported compact-package filenames under the canonical parser keys."""
+    for canonical, aliases in ARCH_FILE_ALIASES.items():
+        if canonical in files:
+            continue
+        matched = [files[alias] for alias in aliases if alias in files]
+        if matched:
+            files[canonical] = "\n\n".join(matched)
 
 
 def _extract_from_legacy_yaml(source: dict[str, Any], target_module: str, target_granularity: str) -> dict:
@@ -482,9 +680,12 @@ def _extract_from_markdown_package(source: dict[str, Any], target_module: str, t
 
 def _build_markdown_catalog(source: dict[str, Any], target_granularity: str) -> dict[str, Any]:
     files = source.get("files", {})
+    excluded_requirement_refs = _parse_excluded_requirement_refs(files.get("01-design-context.md", ""))
     deployable_modules = _parse_deployable_modules(files.get("02-module-partitioning.md", ""))
     bounded_contexts = _parse_bounded_contexts(files)
-    components = _parse_components(files.get("02-module-partitioning.md", ""))
+    components = _parse_recursive_children(files.get("02-module-partitioning.md", ""))
+    components.extend(_parse_components(files.get("02-module-partitioning.md", "")))
+    components = _dedupe_modules(components)
     all_units = deployable_modules + bounded_contexts + components
     available_modules = _unique([item["name"] for item in all_units])
 
@@ -619,29 +820,148 @@ def _build_markdown_catalog(source: dict[str, Any], target_granularity: str) -> 
         "units": enriched_units,
         "available_modules": available_modules,
         "architecture_coverage_gaps": _unique_text(gaps),
+        "excluded_requirement_refs": excluded_requirement_refs,
         "source_files": list(files.keys()),
     }
 
 
 def _parse_deployable_modules(content: str) -> list[dict[str, Any]]:
     modules: list[dict[str, Any]] = []
+    columns: dict[str, int] = {}
     for line in content.splitlines():
         cells = _split_markdown_row(line)
-        if len(cells) < 3 or not _has_bold(cells[0]):
+        if len(cells) < 3:
+            continue
+        normalized = [_clean_markdown(cell).casefold() for cell in cells]
+        if "module" in normalized:
+            if normalized[0] == "module" and "responsibility" in normalized:
+                columns = {name: index for index, name in enumerate(normalized)}
+            else:
+                columns = {}
+            continue
+        if normalized[0] in {"bounded context", "external system"}:
+            columns = {}
             continue
         name = _clean_markdown(cells[0])
-        if not _looks_like_module_name(name):
+        if (
+            not columns
+            and (not _has_bold(cells[0]) or not _looks_like_module_name(name))
+        ) or name.casefold() in {"module", "bounded context"}:
             continue
+        if columns and "included bc" in columns:
+            included_contexts = _extract_possible_names(cells[columns["included bc"]])
+            responsibility = _clean_markdown(cells[columns["responsibility"]])
+            reason_index = columns.get("reason")
+            partition_reason = _clean_markdown(cells[reason_index]) if reason_index is not None and reason_index < len(cells) else ""
+            source_text = ""
+        elif columns and "responsibility" in columns:
+            responsibility = _clean_markdown(cells[columns["responsibility"]])
+            source_index = columns.get("primary source")
+            source_text = _clean_markdown(cells[source_index]) if source_index is not None and source_index < len(cells) else ""
+            included_contexts: list[str] = []
+            partition_reason = _clean_markdown(cells[2]) if len(cells) > 2 else ""
+        else:
+            included_contexts = _extract_possible_names(cells[1])
+            responsibility = _clean_markdown(cells[2])
+            partition_reason = _clean_markdown(cells[3]) if len(cells) > 3 else ""
+            source_text = ""
         modules.append(
             {
                 "name": name,
                 "granularity": "deployable_module",
-                "included_contexts": _extract_possible_names(cells[1]),
-                "responsibility": _clean_markdown(cells[2]),
-                "partition_reason": _clean_markdown(cells[3]) if len(cells) > 3 else "",
+                "included_contexts": included_contexts,
+                "responsibility": responsibility,
+                "partition_reason": partition_reason,
+                "requirement_refs": _expand_requirement_refs(source_text),
             }
         )
     return _dedupe_modules(modules)
+
+
+def _expand_requirement_refs(text: str) -> list[str]:
+    """Normalize parent refs, including derived IDs and compact ranges."""
+    refs: list[str] = []
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9])"
+        r"(?:(?P<prefix>REQ|NFR|FR|UC|QAS)-)?"
+        r"(?P<derived>D)?(?P<start>\d{3})"
+        r"(?:\s*[~–—-]\s*(?:(?P<end_prefix>REQ|NFR|FR|UC|QAS)-)?"
+        r"(?P<end_derived>D)?(?P<end>\d{3}))?",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(text):
+        prefix = (match.group("prefix") or match.group("end_prefix") or "REQ").upper()
+        derived = bool(match.group("derived") or match.group("end_derived"))
+        first = int(match.group("start"))
+        last = int(match.group("end")) if match.group("end") else first
+        if last < first or last - first > 999:
+            last = first
+        for value in range(first, last + 1):
+            middle = "D" if derived else ""
+            refs.append(f"{prefix}-{middle}{value:03d}")
+    return _unique(refs)
+
+
+def _parse_recursive_children(content: str) -> list[dict[str, Any]]:
+    """Parse the direct-child registry emitted by recursive architecture packages."""
+    children: list[dict[str, Any]] = []
+    columns: dict[str, int] = {}
+    for line in content.splitlines():
+        if columns and line.strip() and not line.lstrip().startswith("|"):
+            columns = {}
+        cells = _split_markdown_row(line)
+        if not cells:
+            continue
+        normalized = [re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", _clean_markdown(cell).casefold()) for cell in cells]
+        first = normalized[0]
+        if first in {"childid", "targetnodeid", "下一层targetnodeid"}:
+            columns = {name: index for index, name in enumerate(normalized)}
+            continue
+        if not columns or first in {"", "childid", "targetnodeid", "下一层targetnodeid"}:
+            continue
+
+        def cell_for(markers: tuple[str, ...]) -> str:
+            for name, index in columns.items():
+                if any(marker in name for marker in markers) and index < len(cells):
+                    return _clean_markdown(cells[index])
+            return ""
+
+        name = _clean_markdown(cells[0])
+        responsibility = cell_for(("责任", "职责", "焦点"))
+        if not name or not responsibility:
+            continue
+        exclusions = cell_for(("排除",))
+        owned_state = cell_for(("状态",))
+        requirements = cell_for(("需求",))
+        dependencies = cell_for(("依赖",))
+        rationale = cell_for(("存在理由", "理由"))
+        children.append(
+            {
+                "name": name,
+                "granularity": "component",
+                "responsibility": responsibility,
+                "exclusions": exclusions,
+                "owned_state": owned_state,
+                "partition_reason": rationale,
+                "declared_dependencies": dependencies,
+                "requirement_refs": _expand_requirement_refs(requirements),
+                "source_kind": "recursive_child_registry",
+            }
+        )
+    return _dedupe_modules(children)
+
+
+def _parse_excluded_requirement_refs(content: str) -> list[str]:
+    refs: list[str] = []
+    for line in content.splitlines():
+        cells = _split_markdown_row(line)
+        if len(cells) < 2:
+            continue
+        disposition = _clean_markdown(cells[1]).casefold()
+        if not re.search(r"out[-_ ]?of[-_ ]?scope|excluded|deferred|不适用|范围外", disposition):
+            continue
+        refs.extend(_expand_requirement_refs(_clean_markdown(cells[0])))
+    return _unique(refs)
 
 
 def _parse_bounded_contexts(files: dict[str, str]) -> list[dict[str, Any]]:
@@ -709,8 +1029,46 @@ def _extract_interfaces_for_target(content: str, aliases: list[str]) -> list[dic
 
 def _extract_all_interfaces(content: str) -> list[dict[str, Any]]:
     """Parse both compact bullet contracts and nested API contract packages."""
-    records: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = _extract_yaml_internal_contracts(content)
+    records.extend(_extract_field_contract_sections(content))
     level_two_sections = _iter_markdown_sections_at_levels(content, {2})
+
+    compact_columns: dict[str, int] = {}
+    for line in content.splitlines():
+        cells = _split_markdown_row(line)
+        if not cells:
+            continue
+        normalized = [re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", _clean_markdown(cell).casefold()) for cell in cells]
+        if normalized[0] in {"契约id", "contractid"}:
+            compact_columns = {name: index for index, name in enumerate(normalized)}
+            continue
+        if not compact_columns or len(cells) < 3:
+            continue
+        contract_id = _clean_markdown(cells[0])
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*\.v\d+", contract_id, re.IGNORECASE):
+            continue
+        ownership = _clean_markdown(cells[1])
+        owner_parts = re.split(r"\s*(?:→|->|=>)\s*", ownership, maxsplit=1)
+        provider = owner_parts[0] if owner_parts else ""
+        consumer = owner_parts[1] if len(owner_parts) > 1 else ""
+        schema = cells[2]
+        request_fields = _extract_inline_labeled_fields(schema, ("输入", "input"), ("输出", "output"))
+        response_fields = _extract_inline_labeled_fields(schema, ("输出", "output"), ())
+        error_text = _clean_markdown(" ".join(cells[3:]))
+        record = {
+            "name": contract_id,
+            "contract_id": contract_id,
+            "source": "06-interface-contracts.md",
+            "provider": provider,
+            "consumer": consumer,
+            "method": "CALL",
+            "path": "",
+            "request_fields": request_fields,
+            "response_fields": response_fields,
+            "error_codes": _extract_inline_error_codes(error_text),
+            "raw_text": _clean_markdown(" ".join(cells)),
+        }
+        records.append(_mark_interface_completeness(record))
 
     for line in content.splitlines():
         cells = _split_markdown_row(line)
@@ -814,12 +1172,170 @@ def _extract_all_interfaces(content: str) -> list[dict[str, Any]]:
     return _merge_interface_records(records)
 
 
+def _extract_field_contract_sections(content: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for _level, heading, body in _iter_markdown_sections_at_levels(content, {3, 4}):
+        values: dict[str, str] = {}
+        for line in body.splitlines():
+            cells = _split_markdown_row(line)
+            if len(cells) != 2:
+                continue
+            key = _clean_markdown(cells[0]).casefold()
+            if key in {"field", "字段"}:
+                continue
+            values[key] = cells[1]
+        contract_id = _clean_markdown(values.get("contract_id", "") or heading)
+        schema = values.get("schema", "")
+        if not values.get("contract_id") or not schema:
+            continue
+        record = {
+            "name": contract_id,
+            "contract_id": contract_id,
+            "source": "06-interface-contracts.md",
+            "provider": _clean_markdown(values.get("provider", "")),
+            "consumer": _clean_markdown(values.get("consumer", "")),
+            "method": "CALL",
+            "path": "",
+            "request_fields": _extract_inline_labeled_fields(schema, ("输入", "input"), ("输出", "output")),
+            "response_fields": _extract_inline_labeled_fields(schema, ("输出", "output"), ()),
+            "error_codes": _extract_inline_error_codes(values.get("errors", "")),
+            "side_effects": _clean_markdown(values.get("side effects", "")),
+            "raw_text": f"{heading}\n{body}",
+        }
+        records.append(_mark_interface_completeness(record))
+    return records
+
+
+def _extract_yaml_internal_contracts(content: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for block in re.findall(r"```ya?ml\s*\n(.*?)```", content, re.DOTALL | re.IGNORECASE):
+        data = _try_load_yaml(block)
+        if not isinstance(data, dict):
+            continue
+        for contract_id, spec in data.items():
+            if not isinstance(spec, dict) or not re.search(r"(?:\.v\d+|L\d+-)", str(contract_id), re.IGNORECASE):
+                continue
+            request_fields: list[str] = []
+            response_fields: list[str] = []
+            for key, value in spec.items():
+                normalized_key = str(key).casefold()
+                if any(marker in normalized_key for marker in ("inbound", "required_fields", "correlation")):
+                    request_fields.extend(_string_list(value))
+                if any(marker in normalized_key for marker in ("outbound", "produced_fields", "available_fields", "unavailable_fields")):
+                    response_fields.extend(_string_list(value))
+            event_fields = _string_list(spec.get("fields"))
+            if event_fields:
+                request_fields.extend(event_fields)
+                response_fields.extend(event_fields)
+            record = {
+                "name": str(contract_id),
+                "contract_id": str(contract_id),
+                "source": "06-interface-contracts.md",
+                "provider": ", ".join(_string_list(spec.get("emitted_by"))) or str(spec.get("owner") or spec.get("provider") or ""),
+                "consumer": str(spec.get("consumer") or ""),
+                "method": "CALL",
+                "path": "",
+                "request_fields": _unique(request_fields),
+                "response_fields": _unique(response_fields),
+                "error_codes": _string_list(spec.get("error_codes")),
+                "raw_text": block,
+            }
+            records.append(_mark_interface_completeness(record))
+        if data.get("contract_id"):
+            record = {
+                "name": str(data.get("contract_id")),
+                "contract_id": str(data.get("contract_id")),
+                "source": "06-interface-contracts.md",
+                "provider": str(data.get("owner") or data.get("provider") or ""),
+                "consumer": str(data.get("consumer") or ""),
+                "method": "CALL",
+                "path": "",
+                "request_fields": _string_list(data.get("required_fields")),
+                "response_fields": _string_list(data.get("produced_fields")),
+                "error_codes": _string_list(data.get("error_codes")),
+                "side_effects": str(data.get("side_effects") or ""),
+                "raw_text": block,
+            }
+            records.append(_mark_interface_completeness(record))
+
+        component_contracts = data.get("internal_component_contracts")
+        if not isinstance(component_contracts, dict):
+            continue
+        providers: dict[str, tuple[str, list[str], dict[str, Any]]] = {}
+        consumers: dict[str, list[str]] = {}
+        for component, spec in component_contracts.items():
+            if not isinstance(spec, dict):
+                continue
+            for contract_id, fields in (spec.get("outbound_produced") or {}).items():
+                providers[str(contract_id)] = (str(component), _string_list(fields), spec)
+            for contract_id in (spec.get("inbound_required") or {}):
+                consumers.setdefault(str(contract_id), []).append(str(component))
+        for contract_id, (provider, response_fields, spec) in providers.items():
+            request_fields: list[str] = []
+            for component in consumers.get(contract_id, []):
+                consumer_spec = component_contracts.get(component, {})
+                request_fields.extend(_string_list((consumer_spec.get("inbound_required") or {}).get(contract_id)))
+            record = {
+                "name": contract_id,
+                "contract_id": contract_id,
+                "source": "06-interface-contracts.md",
+                "provider": provider,
+                "consumer": ", ".join(consumers.get(contract_id, [])),
+                "method": "CALL",
+                "path": "",
+                "request_fields": _unique(request_fields) or response_fields,
+                "response_fields": response_fields,
+                "error_codes": _string_list(spec.get("error_codes")),
+                "raw_text": block,
+            }
+            records.append(_mark_interface_completeness(record))
+    return records
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    if isinstance(value, dict):
+        return [str(item) for item in value]
+    if value in {None, ""}:
+        return []
+    return [str(value)]
+
+
 def _mark_interface_completeness(interface: dict[str, Any]) -> dict[str, Any]:
     required_fields = ["method", "request_fields", "response_fields"]
     if interface.get("method") in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         required_fields.append("path")
     missing = [field for field in required_fields if not interface.get(field)]
     return {**interface, "complete": not missing, "missing": missing}
+
+
+def _extract_inline_labeled_fields(
+    text: str,
+    labels: tuple[str, ...],
+    stop_labels: tuple[str, ...],
+) -> list[str]:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(rf"(?:{label_pattern})\s*[：:]", text, re.IGNORECASE)
+    if not match:
+        return []
+    section = text[match.end():]
+    if stop_labels:
+        stop_pattern = "|".join(re.escape(label) for label in stop_labels)
+        stop = re.search(rf"(?:{stop_pattern})\s*[：:]", section, re.IGNORECASE)
+        if stop:
+            section = section[:stop.start()]
+    fields = re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", section)
+    if not fields:
+        fields = re.findall(r"\b([a-z][a-z0-9_]*)\b", _clean_markdown(section))
+    return _unique(fields)
+
+
+def _extract_inline_error_codes(text: str) -> list[str]:
+    codes = re.findall(r"`([A-Za-z][A-Za-z0-9_-]*)`", text)
+    if not codes:
+        codes = re.findall(r"\b([a-z][a-z0-9_]*(?:error|failed|invalid|unavailable|revoked))\b", text, re.IGNORECASE)
+    return _unique(codes)
 
 
 def _merge_interface_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1071,7 +1587,10 @@ def _extract_data_assets(content: str, units: list[dict[str, Any]]) -> list[dict
         "field",
     }
 
+    state_columns: dict[str, int] = {}
     for line in content.splitlines():
+        if state_columns and line.strip() and not line.lstrip().startswith("|"):
+            state_columns = {}
         h2 = re.match(r"^##\s+(.+)$", line.strip())
         if h2:
             current_h2 = _clean_heading_title(h2.group(1))
@@ -1085,6 +1604,29 @@ def _extract_data_assets(content: str, units: list[dict[str, Any]]) -> list[dict
         cells = _split_markdown_row(line)
         if len(cells) < 2:
             continue
+        normalized = [re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", _clean_markdown(cell).casefold()) for cell in cells]
+        if normalized[0] in {"状态", "state"} and any("ownerchildid" in item or item == "owner" for item in normalized[1:]):
+            state_columns = {name: index for index, name in enumerate(normalized)}
+            continue
+        if state_columns:
+            owner_index = next(
+                (index for name, index in state_columns.items() if "ownerchildid" in name or name == "owner"),
+                None,
+            )
+            name = _clean_markdown(cells[0])
+            owner = _clean_markdown(cells[owner_index]) if owner_index is not None and owner_index < len(cells) else ""
+            if name and owner and _looks_like_data_name(name):
+                assets.append(
+                    {
+                        "name": name,
+                        "context": owner,
+                        "description": _clean_markdown(" ".join(cells[1:])),
+                        "source": "05-data-model.md",
+                        "key": f"{_normalize_name(owner)}:{_normalize_name(name)}",
+                        "explicit_owner": owner,
+                    }
+                )
+                continue
         name = _clean_markdown(cells[0])
         if name.casefold() in header_labels:
             continue
@@ -1126,6 +1668,9 @@ def _looks_like_data_name(name: str) -> bool:
 
 def _data_asset_owner_score(unit: dict[str, Any], asset: dict[str, str]) -> int:
     aliases = _module_aliases(unit)
+    explicit_owner = asset.get("explicit_owner", "")
+    if explicit_owner and any(_same_name(explicit_owner, alias) for alias in aliases):
+        return 110
     context = asset.get("context", "")
     if context and any(_same_name(context, alias) or _contains_any(context, [alias]) for alias in aliases):
         return 100

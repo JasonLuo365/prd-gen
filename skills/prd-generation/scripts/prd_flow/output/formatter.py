@@ -17,7 +17,7 @@ def _metadata(lines: list[str], item: dict) -> None:
     for key in ("parent_req", "parent_nfr", "source_kind"):
         if item.get(key):
             lines.append(f"  - {key}: {item[key]}")
-    for key in ("implementation_surfaces", "related_reqs"):
+    for key in ("implementation_surfaces", "related_reqs", "evidence_refs"):
         if item.get(key):
             lines.append(f"  - {key}: [{', '.join(item[key])}]")
 
@@ -53,7 +53,15 @@ def format_requirements(data: dict) -> str:
 
 
 def _value(value: object) -> str:
-    return " | ".join(str(item) for item in value) if isinstance(value, list) else str(value or "")
+    if isinstance(value, list):
+        rendered = []
+        for item in value:
+            if isinstance(item, dict) and item.get("condition") and item.get("response"):
+                rendered.append(f"{item['condition']} -> {item['response']}")
+            else:
+                rendered.append(str(item))
+        return " | ".join(rendered)
+    return str(value or "")
 
 
 def format_acceptance(data: dict, requirements: dict | None = None) -> str:

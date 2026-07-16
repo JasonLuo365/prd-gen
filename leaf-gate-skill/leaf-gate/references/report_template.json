@@ -1,11 +1,12 @@
 {
   "node_id": "",
-  "decision": "LEAF_READY|NEEDS_DECOMPOSITION|NEEDS_REFINEMENT",
+  "phase": "FINAL",
+  "decision": "CONTINUE_LAYERING|STOP_LAYERING",
   "summary": "",
   "thresholds": {},
   "config": {
-    "config_path": "",
-    "profile_path": "",
+    "config_path": null,
+    "profile_path": null,
     "profile": {},
     "warnings": []
   },
@@ -18,47 +19,38 @@
   },
   "llm_judgement": {
     "C1_behavior_complexity": {
-      "status": "pass|warn|fail",
+      "status": "pass|fail",
       "confidence": 0.0,
       "evidence": [],
       "reason": ""
     },
     "C2_contract_boundary": {
-      "status": "pass|warn|fail",
+      "status": "pass|fail",
       "confidence": 0.0,
       "evidence": [],
       "reason": ""
     },
     "C3_ai_context_control": {
-      "status": "pass|warn|fail",
+      "status": "pass|fail",
       "confidence": 0.0,
       "evidence": [],
       "reason": ""
     },
     "C4_verifiability": {
-      "status": "pass|warn|fail",
+      "status": "pass|fail",
       "confidence": 0.0,
       "evidence": [],
       "reason": ""
     },
     "C5_risk_decomposition": {
-      "status": "pass|warn|fail",
+      "status": "pass|fail",
       "confidence": 0.0,
       "evidence": [],
       "reason": ""
     }
   },
-  "refinement_routes": [
-    {
-      "target": "architecture|testcase|owner_decision",
-      "criterion": "C1_behavior_complexity|C2_contract_boundary|C3_ai_context_control|C4_verifiability|C5_risk_decomposition|artifacts",
-      "reason": "",
-      "actions": [],
-      "evidence": []
-    }
-  ],
   "next_action": {
-    "type": "decompose|refine_spec|vibecode",
+    "type": "decompose|vibecode",
     "children": [],
     "notes": []
   }

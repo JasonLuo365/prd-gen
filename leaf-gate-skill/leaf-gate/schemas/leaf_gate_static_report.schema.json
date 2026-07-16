@@ -1,25 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Leaf Gate Static Report",
+  "title": "Leaf Gate Static Evidence Report",
   "type": "object",
-  "required": ["node_id", "decision", "summary", "static_checks", "next_action"],
+  "required": ["node_id", "phase", "decision", "summary", "static_checks", "next_action"],
   "properties": {
     "node_id": { "type": "string" },
-    "decision": {
-      "type": "string",
-      "enum": [
-        "LEAF_READY",
-        "NEEDS_DECOMPOSITION",
-        "NEEDS_REFINEMENT",
-        "STATIC_PASS_REQUIRES_LLM"
-      ]
-    },
+    "phase": { "const": "STATIC_EVIDENCE" },
+    "decision": { "type": "null" },
     "summary": { "type": "string" },
     "thresholds": { "type": "object" },
     "config": { "type": "object" },
     "static_checks": { "type": "object" },
     "llm_judgement": { "type": ["object", "null"] },
-    "refinement_routes": { "type": "array" },
     "next_action": { "type": "object" }
-  }
+  },
+  "additionalProperties": false
 }

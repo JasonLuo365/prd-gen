@@ -1,20 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Leaf Gate Final Report",
+  "title": "Leaf Gate Final Binary Report",
   "type": "object",
-  "required": ["node_id", "decision", "summary", "static_checks", "llm_judgement", "next_action"],
+  "required": ["node_id", "phase", "decision", "summary", "static_checks", "llm_judgement", "next_action"],
   "properties": {
     "node_id": { "type": "string" },
+    "phase": { "const": "FINAL" },
     "decision": {
       "type": "string",
-      "enum": ["LEAF_READY", "NEEDS_DECOMPOSITION", "NEEDS_REFINEMENT"]
+      "enum": ["CONTINUE_LAYERING", "STOP_LAYERING"]
     },
     "summary": { "type": "string" },
     "thresholds": { "type": "object" },
     "config": { "type": "object" },
     "static_checks": { "type": "object" },
-    "llm_judgement": { "type": "object" },
-    "refinement_routes": { "type": "array" },
+    "llm_judgement": { "type": ["object", "null"] },
     "next_action": { "type": "object" }
-  }
+  },
+  "additionalProperties": false
 }

@@ -1,27 +1,37 @@
-# Pressure Scenarios
+# Leaf Gate Pressure Scenarios
 
-Use these scenarios to test whether agents apply the skill rather than shortcutting the decision.
+## Hidden Product Story
 
-## Scenario 1: Low Scenario Count Trap
+A low-count testcase hides several subsystems and business loops in one scenario.
 
-Input: A root PRD has fewer than 10 Gherkin scenarios, but the main scenario contains messaging, planning, authorization, execution, status, recovery, and results.
+Expected: `CONTINUE_LAYERING`. Scenario count alone must not stop layering.
 
-Expected: The agent must not mark `LEAF_READY` from scenario count. It should fail C1 and recommend decomposition.
+## Incomplete Contract
 
-## Scenario 2: Missing Architecture Contract
+The architecture has no caller-visible error, state, side-effect, or dependency semantics.
 
-Input: PRD and feature are present, but architecture only lists component names.
+Expected: `INPUT_ERROR` without `decision`. Leaf Gate must not invent a contract or call incompleteness a layering result.
 
-Expected: The agent must return `NEEDS_REFINEMENT` with an `architecture` route or fail C2. It must not invent contracts.
+## Weak Traceability
 
-## Scenario 3: Vague Then Clauses
+Requirements and scenarios exist, but the primary architecture only has broad keyword overlap.
 
-Input: Feature uses Then clauses like "system handles errors safely" without observable assertions.
+Expected: `INPUT_ERROR` without `decision`. The upstream testcase-driven architecture validation loop owns correction.
 
-Expected: The agent must fail or warn C4 and request refinement.
+## Validated Wide Boundary
 
-## Scenario 4: High Risk Remaining
+All artifacts are complete, but the node contains several independently implementable contracts, state machines, or risk boundaries.
 
-Input: Authorization and destructive operations remain in one node, with unresolved policy questions.
+Expected: `CONTINUE_LAYERING` with meaningful child-boundary evidence.
 
-Expected: The agent must not return `LEAF_READY`; choose `NEEDS_DECOMPOSITION` or `NEEDS_REFINEMENT` with an `owner_decision` route.
+## Mechanical Child Split
+
+The proposed children merely mirror document sections or forward calls without independent behavior or tests.
+
+Expected: `STOP_LAYERING`.
+
+## Flattened Architecture Package
+
+The effective architecture is a flat directory containing README and a variable set of final documents, with no separate validation report.
+
+Expected: discover the package from manifest links/semantics. The missing validation-report file is not an error.
