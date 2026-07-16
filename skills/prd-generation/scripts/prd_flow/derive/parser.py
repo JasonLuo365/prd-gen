@@ -902,6 +902,20 @@ def _expand_requirement_refs(text: str) -> list[str]:
     return _unique(refs)
 
 
+def _partition_owned_and_support_refs(text: str) -> tuple[list[str], list[str]]:
+    """Separate owned allocations from non-owning support annotations."""
+    marker = re.search(
+        r"(?:^|[;；。])\s*(?:支持|协助|support(?:s|ing)?|assist(?:s|ing)?)(?:\s+|[:：])?",
+        text,
+        re.IGNORECASE,
+    )
+    if not marker:
+        return _expand_requirement_refs(text), []
+    owned = _expand_requirement_refs(text[: marker.start()])
+    supported = [ref for ref in _expand_requirement_refs(text[marker.end() :]) if ref not in owned]
+    return owned, supported
+
+
 def _parse_recursive_children(content: str) -> list[dict[str, Any]]:
     """Parse the direct-child registry emitted by recursive architecture packages."""
     children: list[dict[str, Any]] = []
@@ -935,6 +949,7 @@ def _parse_recursive_children(content: str) -> list[dict[str, Any]]:
         requirements = cell_for(("需求",))
         dependencies = cell_for(("依赖",))
         rationale = cell_for(("存在理由", "理由"))
+        requirement_refs, support_requirement_refs = _partition_owned_and_support_refs(requirements)
         children.append(
             {
                 "name": name,
@@ -944,7 +959,8 @@ def _parse_recursive_children(content: str) -> list[dict[str, Any]]:
                 "owned_state": owned_state,
                 "partition_reason": rationale,
                 "declared_dependencies": dependencies,
-                "requirement_refs": _expand_requirement_refs(requirements),
+                "requirement_refs": requirement_refs,
+                "support_requirement_refs": support_requirement_refs,
                 "source_kind": "recursive_child_registry",
             }
         )

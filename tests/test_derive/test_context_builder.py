@@ -379,6 +379,45 @@ doc_id: "PARENT-v1.0"
         assert {req["id"] for req in intake["related_requirements"]} == {"REQ-013"}
 
 
+def test_explicit_child_allocations_override_semantic_overlap_and_support_refs(tmp_path: Path):
+    parent_prd = tmp_path / "prd.md"
+    parent_prd.write_text(
+        """---
+doc_id: "PROFILE-v1.0"
+---
+
+# Requirements
+
+### Must Have
+- [REQ-D001] AmazonDomainTaxonomy maps products and validates source and target domains.
+- [REQ-D002] The system synthesizes and publishes a seven-dimension profile.
+- [REQ-D003] The system reconciles authorized history before qualification.
+""",
+        encoding="utf-8",
+    )
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "02-architecture-decomposition.md").write_text(
+        """# Architecture decomposition
+| child_id | 责任与拥有状态 | 排除 | 分配需求 | 依赖 | 存在理由 |
+|---|---|---|---|---|---|
+| `EVIDENCE-QUALIFICATION` | Owns taxonomy mapping and qualification results | profile publication | D001 | HISTORY | qualification boundary |
+| `PROFILE-SYNTHESIS` | Owns profile synthesis and publication from qualified inputs | taxonomy mapping | D002 | EVIDENCE | publication boundary |
+| `HISTORY` | Owns authorized history reconciliation | taxonomy mapping | D003；支持 D001 | EVIDENCE | history boundary |
+""",
+        encoding="utf-8",
+    )
+
+    synthesis = build_derive_context(parent_prd, architecture, "PROFILE-SYNTHESIS", "component")
+    evidence = build_derive_context(parent_prd, architecture, "EVIDENCE-QUALIFICATION", "component")
+    history = build_derive_context(parent_prd, architecture, "HISTORY", "component")
+
+    assert {req["id"] for req in synthesis["related_requirements"]} == {"REQ-D002"}
+    assert {req["id"] for req in evidence["related_requirements"]} == {"REQ-D001"}
+    assert {req["id"] for req in history["related_requirements"]} == {"REQ-D003"}
+    assert synthesis["requirement_owners"]["REQ-D001"] == ["EVIDENCE-QUALIFICATION"]
+
+
 def test_component_context_maps_problem_intake_requirements(tmp_path: Path):
     parent_prd = tmp_path / "prd.md"
     parent_prd.write_text(

@@ -125,6 +125,7 @@ For Derive mode, do not reopen the parent's product-quality review. Verify only 
 8. Acceptance Contract and success-metric requirement references are remapped to real child IDs; no parent-only or unknown ID remains.
 9. A parent contract split across child owners has an explicit architecture projection: `shared` for intentional shared integration context or `project` for a complete child-scoped contract. Existing child output is never used as projection evidence.
 10. Child frontmatter contains only ordered, deduplicated architecture identifier lists (`interface_refs`, `dependency_refs`, and `event_refs`); complete architecture objects are not duplicated into the PRD.
+11. Explicit architecture owners remain authoritative: support, dependency, consumer, and input-precondition relationships do not transfer requirement ownership, and contract projection cannot expand it.
 
 When these checks pass, write one `prd.md` per direct child with `inheritance_complete: true`. Derive does not require independent Agent review.
 

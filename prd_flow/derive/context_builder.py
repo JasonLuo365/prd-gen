@@ -403,6 +403,16 @@ def _build_ownership_map(
     owners: dict[str, set[str]] = {}
     for req in requirements:
         req_id = req.get("id", "")
+        reference_ids = _requirement_reference_ids(req)
+        explicit_owners = {
+            unit.get("name", "")
+            for unit in units
+            if unit.get("name")
+            and reference_ids.intersection(unit.get("requirement_refs", []))
+        }
+        if explicit_owners:
+            owners[req_id] = explicit_owners
+            continue
         linked_scenarios = [
             scenario
             for scenario in scenarios
@@ -414,6 +424,16 @@ def _build_ownership_map(
             if unit.get("name") and _requirement_matches_unit(req, unit, linked_scenarios)
         }
     return owners
+
+
+def _requirement_reference_ids(req: dict) -> set[str]:
+    """Return IDs that an architecture allocation may use for one requirement."""
+    ids = {str(req.get("id", "")), str(req.get("parent_req", "")), str(req.get("parent_nfr", ""))}
+    for item_id in list(ids):
+        clause_match = re.match(r"^CLAUSE-(\d{3})-", item_id, re.IGNORECASE)
+        if clause_match:
+            ids.add(f"REQ-{clause_match.group(1)}")
+    return {item_id for item_id in ids if item_id}
 
 
 def _complete_atomic_aggregate_ownership(

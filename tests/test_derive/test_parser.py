@@ -362,7 +362,7 @@ def test_recursive_architecture_package_exposes_direct_children_and_derived_refs
         """# Architecture decomposition
 | child_id | 责任与所有权 | 排除 | 需求 | 依赖与存在理由 |
 |---|---|---|---|---|
-| `query-resolution` | 解析查询并拥有 QueryState。 | 不调用外部服务。 | D001~D003、NFR-D001 | profile；独立生命周期。 |
+| `query-resolution` | 解析查询并拥有 QueryState。 | 不调用外部服务。 | D001~D003、NFR-D001；支持 D009 | profile；独立生命周期。 |
 | `candidate-workset` | 拥有候选工作集。 | 不负责排序。 | REQ-D004/D006-D008 | query；独立状态。 |
 """,
         encoding="utf-8",
@@ -397,6 +397,7 @@ error_codes: [query_invalid]
     ]
     query, candidates = catalog["units"]
     assert query["requirement_refs"] == ["REQ-D001", "REQ-D002", "REQ-D003", "NFR-D001"]
+    assert query["support_requirement_refs"] == ["REQ-D009"]
     assert candidates["requirement_refs"] == [
         "REQ-D004",
         "REQ-D006",

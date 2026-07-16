@@ -213,6 +213,7 @@ Derive rules:
 7. Leave testcase generation, architecture generation, testcase-driven Mock validation, and Leaf Gate to their downstream stages.
 8. Require every generated direct child to contain at least one inherited current-release obligation. Require every inherited current requirement to retain a complete compatible parent Acceptance Contract, and require every inherited metric requirement reference to resolve to a child requirement ID. Any failure blocks the whole layer atomically and leaves existing outputs unchanged.
 9. Never special-case a product or module in code. Resolve split parent contracts only through the generic `acceptance-contract-projections.yaml` schema.
+10. Treat explicit direct-child requirement allocations as authoritative owners. A support, dependency, consumer, or input-precondition reference is not ownership. Semantic matching may fill only requirements with no explicit owner, and an Acceptance Contract projection must never expand requirement ownership.
 
 Never create a success response, error response, boundary, threshold, or exclusion in Derive. Preserve only the corresponding parent content. Do not generate a placeholder scenario.
 
