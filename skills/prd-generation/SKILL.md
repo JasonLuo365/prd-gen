@@ -226,12 +226,17 @@ Produce sections in this order:
 3. Scope and Non-goals
 4. Current Release — Functional Requirements
 5. Current Release — Non-functional Requirements
-6. Success Metrics
-7. Acceptance Contracts
-8. Oracle Coverage Ledger
-9. Future Backlog / Documented Exclusions
-10. Risks, Dependencies, and Blocking Questions
-11. Agent Review Report (Root mode only)
+6. 架构输入契约
+7. Success Metrics
+8. Acceptance Contracts
+9. Oracle Coverage Ledger
+10. Future Backlog / Documented Exclusions
+11. Risks, Dependencies, and Blocking Questions
+12. Agent Review Report (Root mode only)
+
+## 架构输入契约
+
+当 PRD 将被架构生成 Skill 使用时，加入“架构输入契约”章节。该章节应与规范性产品需求分开，仅记录明确的系统边界、外部依赖、数据与存储约束、运行时/容量约束、安全/隐私约束、部署约束，以及需要人工确认的架构决策。不得擅自指定数据库、队列、云厂商、框架、模型托管方式或部署拓扑。未决的架构选择必须标记为待确认决策，不得默默升级为产品需求。
 
 Root frontmatter must include:
 

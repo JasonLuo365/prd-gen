@@ -15,6 +15,10 @@ review_method: independent_agent
 
 {{atomic_requirements}}
 
+# 架构输入契约
+
+{{architecture_input_contract}}
+
 # Success Metrics
 
 {{success_metrics}}

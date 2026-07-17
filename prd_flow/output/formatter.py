@@ -11,6 +11,23 @@ def format_problem_statement(data: dict) -> str:
     return "\n".join(["# Problem Statement\n", "## 目标用户", data.get("target_users", "[待填写]"), "\n## 痛点描述", data.get("pain_points", "[待填写]"), "\n## 机会窗口", data.get("opportunity", "[待填写]")])
 
 
+def format_architecture_input(data: dict | None = None) -> str:
+    """Render architecture-facing constraints without inventing technical choices."""
+    data = data or {}
+    lines = ["# 架构输入契约\n"]
+    for title, key in (
+        ("系统边界", "system_boundary"),
+        ("外部依赖", "external_dependencies"),
+        ("明确约束", "explicit_constraints"),
+        ("需要人工确认的架构决策", "open_decisions"),
+    ):
+        lines.extend([f"## {title}"])
+        values = data.get(key) or ["[待补充；不得由生成器擅自决定]"]
+        lines.extend(f"- {value}" for value in values)
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def _metadata(lines: list[str], item: dict) -> None:
     lines.append(f"  - release_scope: {release_scope(item)}")
     lines.append(f"  - requirement_kind: {item.get('requirement_kind', 'atomic')}")

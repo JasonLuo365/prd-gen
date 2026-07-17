@@ -1,6 +1,7 @@
 """Assemble the complete three-phase PRD document."""
 from prd_flow.output.formatter import (
     format_acceptance,
+    format_architecture_input,
     format_frontmatter,
     format_problem_statement,
     format_requirements,
@@ -68,6 +69,10 @@ def assemble_prd(draft_content: dict) -> str:
     if p3_data:
         parts.append(format_requirements(p3_data))
         parts.append("")
+
+    # 架构约束放在产品需求和 NFR 之后，且不转化为规范性产品需求。
+    parts.append(format_architecture_input(draft_content.get("P6", {})))
+    parts.append("")
 
     # Phase 5: Success Metrics
     p5_data = draft_content.get("P5", {})
