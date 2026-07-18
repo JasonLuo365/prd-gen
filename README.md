@@ -1,6 +1,6 @@
-# PRD Gen
+# PRD-Gen-Leaf-Gate
 
-PRD Gen 是一个面向分层开发流程的 PRD 生成与评审工具集。它主要覆盖两件事：
+PRD-Gen-Leaf-Gate 是一个面向分层开发流程的 PRD 生成与评审工具集。它主要覆盖两件事：
 
 - 从产品想法生成顶层 PRD，并通过质量门控补齐可测试边界。
 - 基于上层 PRD 和架构包派生下层 PRD，并用 Leaf Gate 判断当前节点是否可以停止拆分进入实现。
