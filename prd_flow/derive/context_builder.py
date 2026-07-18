@@ -20,6 +20,13 @@ def build_derive_context(
     """Build complete context for Derive mode."""
     parent_prd = parse_parent_prd(parent_prd_path)
     parent_doc_id = parent_prd.get("doc_id", "UNKNOWN")
+    parent_frontmatter = parent_prd.get("frontmatter", {})
+    if parent_frontmatter.get("status") == "draft" or parent_frontmatter.get("ready_for_test_generation") is False:
+        return {
+            "success": False, "parent_doc_id": parent_doc_id, "module_name": target_module,
+            "available_modules": [], "target_granularity": target_granularity,
+            "error": "PARENT_PRD_NOT_HANDOFF_READY: draft or blocked parents cannot be derived.",
+        }
 
     arch_result = extract_module_context(
         architecture_package_path,
@@ -84,13 +91,12 @@ def build_derive_context(
     data_assets = catalog_module.get("data_assets", []) if isinstance(catalog_module, dict) else []
 
     all_requirements = parent_prd.get("requirements", [])
-    parent_architecture_requirements = [
-        req
-        for req in all_requirements
-        if str(req.get("source_kind", "")).startswith("architecture_")
-    ]
+    # Architecture is allocation/reference evidence, never a source of product
+    # requirements.  Discard legacy architecture-generated rows as obligations.
+    parent_architecture_requirements: list[dict] = []
     business_requirements = [
-        req for req in all_requirements if req not in parent_architecture_requirements
+        req for req in all_requirements
+        if not str(req.get("source_kind", "")).startswith("architecture_")
     ]
     all_non_functional = parent_prd.get("non_functional", [])
     all_success_metrics = [
@@ -120,21 +126,11 @@ def build_derive_context(
                     f"REQ-{clause_match.group(1)}",
                     set(),
                 ).update(inherited_owners)
-    (
-        architecture_owners,
-        interface_parent_refs,
-        data_parent_refs,
-        artifact_parent_refs,
-        architecture_parent_gaps,
-    ) = _map_parent_architecture_requirements(parent_architecture_requirements, units)
-    requirement_owners.update(architecture_owners)
-    _propagate_frontend_business_ownership(
-        business_requirements,
-        parent_architecture_requirements,
-        architecture_owners,
-        requirement_owners,
-        architecture_parent_gaps,
-    )
+    architecture_owners: dict[str, set[str]] = {}
+    interface_parent_refs: dict[str, list[str]] = {}
+    data_parent_refs: dict[str, list[str]] = {}
+    artifact_parent_refs: dict[str, list[str]] = {}
+    architecture_parent_gaps: list[str] = []
     _propagate_scenario_co_ownership(requirement_owners, acceptance_scenarios)
 
     unit_names = {unit.get("name", "") for unit in units if unit.get("name")}
@@ -743,96 +739,6 @@ def _map_parent_architecture_requirements(
     return owners, interface_parent_refs, data_parent_refs, artifact_parent_refs, gaps
 
 
-def _propagate_frontend_business_ownership(
-    business_requirements: list[dict],
-    architecture_requirements: list[dict],
-    architecture_owners: dict[str, set[str]],
-    requirement_owners: dict[str, set[str]],
-    gaps: list[str],
-) -> None:
-    business_by_id = {
-        req.get("id", ""): req
-        for req in business_requirements
-        if req.get("id")
-    }
-    for architecture_req in architecture_requirements:
-        if architecture_req.get("source_kind") != "architecture_frontend":
-            continue
-        architecture_id = architecture_req.get("id", "")
-        linked_ids = list(architecture_req.get("related_reqs", []))
-        if not linked_ids:
-            linked_ids = [
-                req_id
-                for req_id in re.findall(
-                    r"\bREQ-[A-Z0-9]+(?:-[A-Z0-9]+)*\b",
-                    architecture_req.get("text", ""),
-                )
-                if req_id in business_by_id
-            ]
-        if not linked_ids:
-            linked_ids = [
-                req_id
-                for req_id, req in business_by_id.items()
-                if "frontend" in req.get("implementation_surfaces", [])
-            ]
-        if not linked_ids:
-            gaps.append(
-                f"Parent architecture frontend obligation {architecture_id or 'UNKNOWN'} is not linked "
-                "to any parent business requirement."
-            )
-            continue
-        for linked_id in linked_ids:
-            if linked_id not in business_by_id:
-                gaps.append(
-                    f"Parent architecture frontend obligation {architecture_id or 'UNKNOWN'} references "
-                    f"unknown business requirement {linked_id}."
-                )
-                continue
-            requirement_owners.setdefault(linked_id, set()).update(
-                architecture_owners.get(architecture_id, set())
-            )
-
-
-def _unit_has_explicit_frontend_owner(unit: dict) -> bool:
-    evidence_text = " ".join(
-        str(item.get("text", ""))
-        for item in unit.get("evidence", [])
-        if isinstance(item, dict)
-    )
-    text = " ".join(
-        [
-            str(unit.get("name", "")),
-            str(unit.get("responsibility", "")),
-            str(unit.get("partition_reason", "")),
-            *[str(item) for item in unit.get("included_contexts", [])],
-            evidence_text,
-        ]
-    ).casefold()
-    markers = (
-        "frontend",
-        "front-end",
-        "web app",
-        "web ui",
-        "user interface",
-        "student app",
-        "browser",
-        "client app",
-        "react",
-        "vue",
-        "angular",
-        "svelte",
-        "前端",
-        "网页",
-        "页面",
-        "界面",
-        "浏览器",
-        "客户端",
-        "学生端",
-        "交互层",
-    )
-    return any(marker in text for marker in markers)
-
-
 def _requirement_matches_unit(req: dict, unit: dict, scenarios: list[dict]) -> bool:
     req_id = req.get("id", "")
     req_text = req.get("text", "")
@@ -844,10 +750,6 @@ def _requirement_matches_unit(req: dict, unit: dict, scenarios: list[dict]) -> b
     requirement_refs = set(unit.get("requirement_refs", []))
     if req_id in requirement_refs or parent_id in requirement_refs:
         return True
-
-    responsibility = unit.get("responsibility", "")
-    if _violates_module_ownership(combined_text, responsibility):
-        return False
 
     evidence_text = " ".join(
         item.get("text", "")
@@ -989,135 +891,18 @@ def _external_dependencies(dependencies: list[dict]) -> list[dict]:
     return result
 
 
-_SURFACE_ORDER = [
-    "frontend",
-    "api_backend",
-    "domain_logic",
-    "database_migration",
-    "worker_job",
-    "external_adapter",
-    "observability",
-    "integration_wiring",
-]
-
 
 def _detect_implementation_surfaces(text: str, scenarios: list[dict]) -> list[str]:
-    combined = f"{text} {' '.join(_surface_scenario_text(scenario) for scenario in scenarios)}"
-    lowered = combined.casefold()
-    surfaces = {"domain_logic"}
-    if _has_user_interaction(lowered) or any(
-        marker in lowered
-        for marker in (
-            "frontend",
-            "front-end",
-            "web app",
-            "user interface",
-            "前端",
-            "页面",
-            "界面",
-            "按钮",
-            "浏览器",
-            "展示",
-            "显示",
-            "错误提示",
-            "学生点击",
-            "学生选择",
-            "学生上传",
-            "学生输入",
-            "学生填写",
-            "学生提交",
-            "学生请求",
-            "用户点击",
-            "用户选择",
-            "用户上传",
-            "用户输入",
-            "用户填写",
-            "用户提交",
-            "用户请求",
-            "student clicks",
-            "student selects",
-            "student uploads",
-            "student enters",
-            "student submits",
-            "student requests",
-            "user clicks",
-            "user selects",
-            "user uploads",
-            "user enters",
-            "user submits",
-            "user requests",
-        )
-    ):
-        surfaces.add("frontend")
-    if any(
-        marker in lowered
-        for marker in (
-            "backend",
-            "api",
-            "endpoint",
-            "request",
-            "response",
-            "后端",
-            "接口",
-            "请求",
-            "响应",
-            "错误码",
-        )
-    ):
-        surfaces.add("api_backend")
-    if any(marker in lowered for marker in ("database", "postgres", "schema", "migration", "数据库", "迁移")):
-        surfaces.add("database_migration")
-    if any(marker in lowered for marker in ("worker", "scheduler", "cron", "定时", "调度", "作业")):
-        surfaces.add("worker_job")
-    if any(marker in lowered for marker in (" acl", "gateway", "external", "第三方", "外部服务")):
-        surfaces.add("external_adapter")
-    return [surface for surface in _SURFACE_ORDER if surface in surfaces]
-
-
-def _surface_scenario_text(scenario: dict) -> str:
-    parts = [scenario.get("feature", ""), scenario.get("scenario", "")]
-    phase = ""
-    for step in scenario.get("steps", []):
-        if not isinstance(step, dict):
-            continue
-        keyword = str(step.get("keyword", "")).casefold()
-        if keyword in {"given", "when", "then"}:
-            phase = keyword
-        if phase != "given":
-            parts.append(str(step.get("text", "")))
-    return " ".join(parts)
-
-
-def _has_user_interaction(text: str) -> bool:
-    actor_action_patterns = (
-        r"(?:学生|用户).{0,24}(?:点击|选择|上传|输入|填写|提交|请求|确认|重试|查看|进入|开始|添加|删除|下载|登录|退出)",
-        r"(?:student|user).{0,40}(?:clicks?|selects?|uploads?|enters?|fills?|submits?|requests?|confirms?|retries|views?|opens?|starts?|adds?|removes?|downloads?|logs? in|signs? in|logs? out)",
-    )
-    return any(re.search(pattern, text) for pattern in actor_action_patterns)
+    """Expose no inferred implementation surface as a product obligation."""
+    return ["domain_logic"]
 
 
 def _module_implementation_surfaces(
-    module: dict,
-    requirements: list[dict],
-    scenarios: list[dict],
-    interfaces: list[dict],
-    dependencies: list[dict],
-    data_assets: list[dict],
+    module: dict, requirements: list[dict], scenarios: list[dict], interfaces: list[dict],
+    dependencies: list[dict], data_assets: list[dict],
 ) -> list[str]:
-    text = " ".join(
-        [module.get("name", ""), module.get("responsibility", "")]
-        + [req.get("text", "") for req in requirements]
-    )
-    surfaces = set(_detect_implementation_surfaces(text, scenarios))
-    if interfaces:
-        surfaces.add("api_backend")
-    if data_assets:
-        surfaces.add("database_migration")
-    if _external_dependencies(dependencies):
-        surfaces.add("external_adapter")
-    if any(marker in text.casefold() for marker in ("worker", "scheduler", "定时", "调度")):
-        surfaces.add("worker_job")
-    return [surface for surface in _SURFACE_ORDER if surface in surfaces]
+    """Keep architecture implementation details non-normative."""
+    return ["domain_logic"]
 
 
 def _module_keywords(module: dict) -> list[str]:
@@ -1155,246 +940,16 @@ _STOP_TERMS = {
 
 
 def _semantic_match(req: dict, module: dict) -> bool:
-    """Match Chinese parent requirements to module responsibility text.
+    """Conservatively match only generic responsibility terms.
 
-    Architecture packages often name modules in English while root PRDs describe
-    behavior in Chinese. A narrow character n-gram overlap on the module's
-    responsibility gives Derive enough ownership signal without requiring a
-    Leaf Gate report or manual mapping.
+    Explicit allocations remain authoritative.  This fallback must never use a
+    product/domain dictionary: ambiguity is a blocking allocation error.
     """
     req_text = req.get("text", "")
-    responsibility = module.get("responsibility", "")
-    if _violates_module_ownership(req_text, responsibility):
-        return False
-    concept_matches = _matches_responsibility_concept(req_text, responsibility)
-    if _is_problem_intake_component_responsibility(responsibility):
-        return concept_matches
-    if concept_matches:
-        return True
-
     terms = _semantic_terms(module)
     if not terms:
         return False
-
     return any(len(term) >= 4 and term in req_text for term in terms)
-
-
-def _violates_module_ownership(req_text: str, responsibility: str) -> bool:
-    if _is_problem_intake_component_responsibility(responsibility):
-        return False
-    if _is_identity_requirement(req_text) and not _owns_identity(responsibility):
-        return True
-    if _is_retention_or_training_requirement(req_text):
-        return not _owns_compliance(responsibility)
-    if _is_tutoring_session_gate_requirement(req_text):
-        return not _owns_tutoring_session(responsibility)
-    if _is_problem_intake_requirement(req_text) and not _owns_problem_intake(responsibility):
-        return True
-    if _is_privacy_prompt_requirement(req_text) and not _owns_problem_intake(responsibility):
-        return True
-    return _violates_generation_ownership(req_text, responsibility)
-
-
-def _is_problem_intake_component_responsibility(responsibility: str) -> bool:
-    return any(
-        checker(responsibility)
-        for checker in (
-            _owns_consent_component,
-            _owns_image_submission_component,
-            _owns_image_validation_component,
-            _owns_math_recognition_component,
-            _owns_session_lifecycle_component,
-        )
-    )
-
-
-def _violates_generation_ownership(req_text: str, responsibility: str) -> bool:
-    """Prevent content-generation requirements from matching intake-style modules."""
-    if _is_prompt_content_requirement(req_text) and not _owns_ai_tutoring(responsibility):
-        return True
-    if _is_solution_content_requirement(req_text) and not _owns_ai_tutoring(responsibility):
-        return True
-
-    generation_markers = ("完整解答", "分层提示", "关键推导", "标准术语")
-    if not any(marker in req_text for marker in generation_markers):
-        return False
-
-    if "标准术语" in req_text or "关键推导" in req_text:
-        owner_markers = ("完整解答", "分层提示", "提示模板", "LLM")
-        return not any(marker in responsibility for marker in owner_markers)
-
-    owner_markers = ("完整解答", "分层提示", "解答请求", "提示轮次", "提示模板", "LLM")
-    return not any(marker in responsibility for marker in owner_markers)
-
-
-def _matches_responsibility_concept(req_text: str, responsibility: str) -> bool:
-    if _owns_consent_component(responsibility):
-        return _is_privacy_prompt_requirement_plain(req_text)
-
-    if _owns_image_submission_component(responsibility):
-        return _is_image_upload_requirement_plain(req_text) or _is_image_count_requirement_plain(req_text)
-
-    if _owns_image_validation_component(responsibility):
-        return _is_image_validation_requirement_plain(req_text)
-
-    if _owns_math_recognition_component(responsibility):
-        return _is_math_recognition_requirement_plain(req_text)
-
-    if _owns_session_lifecycle_component(responsibility):
-        return _is_retention_requirement_plain(req_text)
-
-    if _owns_identity(responsibility):
-        return (
-            ("手机号" in req_text and ("登录" in req_text or "验证码" in req_text))
-            or ("验证码" in req_text and any(marker in req_text for marker in ("生成", "有效", "重发", "输错", "失效")))
-        )
-
-    if _owns_problem_intake(responsibility):
-        return (
-            _is_problem_intake_requirement(req_text)
-            or _is_privacy_prompt_requirement(req_text)
-        )
-
-    if _owns_tutoring_session(responsibility):
-        return (
-            ("基础水平" in req_text and any(marker in req_text for marker in ("选择", "开始答疑", "未选择")))
-            or _is_tutoring_session_gate_requirement(req_text)
-            or ("完整解答" in req_text and any(marker in req_text for marker in ("查看", "点击", "按钮", "请求", "展示")))
-            or ("会话" in req_text and any(marker in req_text for marker in ("启动", "开始", "关闭", "结束", "生命周期", "状态")))
-        )
-
-    if _owns_ai_tutoring(responsibility):
-        return (
-            _is_prompt_content_requirement(req_text)
-            or _is_solution_content_requirement(req_text)
-            or ("提示" in req_text and "标准术语" in req_text)
-        )
-
-    if _owns_compliance(responsibility):
-        return _is_retention_or_training_requirement(req_text)
-
-    return False
-
-
-def _owns_identity(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("手机号登录", "短信验证码", "认证会话"))
-
-
-def _owns_problem_intake(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("图片上传", "格式/大小", "有效数学题识别", "图片元数据", "隐私提示"))
-
-
-def _owns_tutoring_session(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("基础水平选择", "会话生命周期", "提示轮次计数", "解答请求门控"))
-
-
-def _owns_ai_tutoring(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("生成分层提示", "完整解答", "LLM", "提示模板"))
-
-
-def _owns_compliance(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("保留策略", "定时删除", "合规审计", "训练使用禁止"))
-
-
-def _owns_consent_component(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("隐私提示展示", "学生确认", "同意记录", "PrivacyConsent"))
-
-
-def _owns_image_submission_component(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("图片集提交", "数量限制", "对象存储写入", "ImageSubmission", "RawImage"))
-
-
-def _owns_image_validation_component(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("格式校验", "大小校验", "损坏检测"))
-
-
-def _owns_math_recognition_component(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("识别服务", "识别结果", "MathProblemRecognition"))
-
-
-def _owns_session_lifecycle_component(responsibility: str) -> bool:
-    return any(marker in responsibility for marker in ("会话创建", "状态管理", "完成判定", "保存期过期", "ProblemIntakeSession"))
-
-
-def _is_privacy_prompt_requirement_plain(req_text: str) -> bool:
-    return "隐私提示" in req_text and any(marker in req_text for marker in ("上传前", "展示", "说明"))
-
-
-def _is_image_upload_requirement_plain(req_text: str) -> bool:
-    return "上传" in req_text and "图片" in req_text and any(marker in req_text for marker in ("JPG", "PNG", "答疑输入"))
-
-
-def _is_image_count_requirement_plain(req_text: str) -> bool:
-    return "图片" in req_text and any(marker in req_text for marker in ("3 张", "第 4 张", "数量超限", "超过 3 张"))
-
-
-def _is_image_validation_requirement_plain(req_text: str) -> bool:
-    if _is_image_count_requirement_plain(req_text):
-        return False
-    return "图片" in req_text and any(
-        marker in req_text
-        for marker in ("10MB", "损坏", "非 JPG/PNG", "无法识别", "错误提示", "拒绝")
-    )
-
-
-def _is_math_recognition_requirement_plain(req_text: str) -> bool:
-    return any(marker in req_text for marker in ("无法识别有效高中数学题", "有效高中数学题", "明确求解目标", "识别出至少一个"))
-
-
-def _is_retention_requirement_plain(req_text: str) -> bool:
-    return any(marker in req_text for marker in ("T + 30", "不可读取", "保存时间", "保存期过期"))
-
-
-def _is_identity_requirement(req_text: str) -> bool:
-    return "验证码" in req_text or ("手机号" in req_text and "登录" in req_text)
-
-
-def _is_problem_intake_requirement(req_text: str) -> bool:
-    if "图片" not in req_text:
-        return False
-    return any(
-        marker in req_text
-        for marker in ("上传", "JPG", "PNG", "10MB", "损坏", "有效高中数学题", "识别", "最多", "第 4 张", "第4张")
-    )
-
-
-def _is_privacy_prompt_requirement(req_text: str) -> bool:
-    return "隐私提示" in req_text and ("上传前" in req_text or "展示" in req_text)
-
-
-def _is_retention_or_training_requirement(req_text: str) -> bool:
-    if _is_privacy_prompt_requirement(req_text):
-        return False
-    return any(marker in req_text for marker in ("30 天", "30天", "删除", "不可读取", "保存时间", "保留", "模型训练"))
-
-
-def _is_tutoring_session_gate_requirement(req_text: str) -> bool:
-    if "基础水平" in req_text and any(marker in req_text for marker in ("选择", "开始答疑", "未选择")):
-        return "生成分层提示" not in req_text
-    if ("分层提示" in req_text or "提示轮次" in req_text) and any(
-        marker in req_text for marker in ("轮次", "上限", "成功展示", "失败不计入")
-    ):
-        return True
-    if "提示轮次" in req_text and "记录" in req_text:
-        return True
-    if "完整解答" in req_text and any(marker in req_text for marker in ("查看", "点击", "按钮", "请求")):
-        return not any(marker in req_text for marker in ("生成响应", "按步骤", "关键推导", "标准术语"))
-    return False
-
-
-def _is_prompt_content_requirement(req_text: str) -> bool:
-    if "分层提示" not in req_text and "提示" not in req_text:
-        return False
-    return any(
-        marker in req_text
-        for marker in ("生成分层提示", "提示生成", "生成提示", "每一轮分层提示", "提示方向", "追问问题", "关键计算结果", "前置知识", "关键思路", "突破口", "易错提醒")
-    )
-
-
-def _is_solution_content_requirement(req_text: str) -> bool:
-    if "完整解答" not in req_text:
-        return False
-    return any(marker in req_text for marker in ("生成响应", "生成", "按步骤", "关键推导", "标准术语"))
 
 
 def _semantic_terms(module: dict) -> set[str]:

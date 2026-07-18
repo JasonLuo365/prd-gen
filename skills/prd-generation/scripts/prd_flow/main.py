@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
 import sys
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from prd_flow import yaml_utils as yaml
@@ -21,7 +23,7 @@ from prd_flow.phases.success_metrics import SuccessMetricsPhase
 from prd_flow.quality.ambiguity import scan_ambiguity
 from prd_flow.quality.reporter import format_quality_report
 from prd_flow.quality.smart_req import check_smart_req
-from prd_flow.quality.oracle import check_oracle_coverage
+from prd_flow.quality.oracle import build_coverage_ledger, check_oracle_coverage
 from prd_flow.quality.suggest import suggest_fix
 from prd_flow.derive.context_builder import build_derive_context
 from prd_flow.derive.layer_allocation import build_layer_allocation
@@ -33,6 +35,13 @@ from prd_flow.session import SessionState, save_session, load_session
 EXIT_SUCCESS = 0
 EXIT_INPUT_ERROR = 1
 EXIT_QUALITY_BLOCKED = 2
+EXIT_DEPENDENCY_ERROR = 3
+EXIT_RUNTIME_ERROR = 4
+EXIT_SCHEMA_INCOMPATIBLE = 5
+
+
+class SchemaIncompatibleError(ValueError):
+    """Raised when a supplied artifact cannot satisfy the PRD contract."""
 
 
 def _run_smart_check(state: SessionState) -> list:
@@ -51,6 +60,16 @@ def _run_smart_check(state: SessionState) -> list:
 def _authoritative_derive_requirements(requirements: list[dict]) -> list[dict]:
     """Preserve every parent requirement and its original MoSCoW priority."""
     return list(requirements)
+
+
+def _derived_requirement_id(kind: str, parent_id: str, used: set[str]) -> str:
+    """Derive an ID from the stable parent ID, not the input list position."""
+    suffix = re.sub(r"^(?:REQ|NFR)-", "", parent_id.upper()) or "UNKNOWN"
+    candidate = f"{kind}-D{suffix}"
+    if candidate in used:
+        candidate = f"{candidate}-{hashlib.sha256(parent_id.encode('utf-8')).hexdigest()[:6].upper()}"
+    used.add(candidate)
+    return candidate
 
 
 def _requirement_matches_parent_reference(requirement: dict, reference: str) -> bool:
@@ -89,7 +108,7 @@ def _map_parent_references(
 
 
 def _load_contract_projections(architecture_input: str | Path) -> dict[tuple[str, str], dict]:
-    """Load declarative child-contract projections; never infer missing oracle fields."""
+    """Load current or legacy declarative projections without inventing contract data."""
     architecture_path = Path(architecture_input)
     if not architecture_path.is_dir():
         return {}
@@ -97,7 +116,26 @@ def _load_contract_projections(architecture_input: str | Path) -> dict[tuple[str
     if not projection_path.exists():
         return {}
     payload = yaml.safe_load(projection_path.read_text(encoding="utf-8")) or {}
-    records = payload.get("acceptance_contract_projections", [])
+    records = list(payload.get("acceptance_contract_projections", []) or [])
+    # Legacy architecture packages group shared projections by parent contract.
+    # Normalize their explicit module slices to the current record-per-child shape.
+    # Only `shared` is lossless: a legacy slice is not a complete child contract
+    # and therefore cannot be treated as a `project` projection.
+    for legacy in payload.get("contracts", []) or []:
+        if legacy.get("disposition") != "shared":
+            continue
+        parent_contract = legacy.get("contract_id", "")
+        for slice_record in legacy.get("module_slices", []) or []:
+            target_module = slice_record.get("module_id", "")
+            if target_module and parent_contract:
+                records.append({
+                    "target_module": target_module,
+                    "parent_contract": parent_contract,
+                    "mode": "shared",
+                    # The legacy field explicitly records a parent-ledger
+                    # association; it adds no child ownership or behavior.
+                    "legacy_additional_verifies": legacy.get("ledger_also_covers", []) or [],
+                })
     return {
         (str(record.get("target_module", "")), str(record.get("parent_contract", ""))): record
         for record in records
@@ -113,6 +151,37 @@ def _check_oracle_coverage(state: SessionState) -> list[dict]:
     )
 
 
+def _normalize_inherited_contract_pairs(contract: dict) -> dict:
+    """Preserve legacy prose pairs in the structured handoff representation."""
+    normalized = dict(contract)
+    for field in ("boundaries", "exceptions"):
+        values = normalized.get(field, [])
+        if isinstance(values, str):
+            values = [values]
+        pairs: list[object] = []
+        for value in values:
+            if not isinstance(value, str):
+                pairs.append(value)
+                continue
+            separator = next((item for item in ("；", ";") if item in value), None)
+            if not separator:
+                pairs.append(value)
+                continue
+            condition, response = value.split(separator, 1)
+            if condition.strip() and response.strip():
+                pairs.append({"condition": condition.strip(), "response": response.strip()})
+            else:
+                pairs.append(value)
+        normalized[field] = pairs
+    if any(
+        isinstance(value, str) and value.strip()
+        for field in ("boundaries", "exceptions")
+        for value in normalized.get(field, [])
+    ):
+        normalized["_inherited_legacy_pair_text"] = True
+    return normalized
+
+
 def _run_ambiguity_check(state: SessionState, prd_text: str) -> dict:
     """对PRD文本运行歧义扫描。"""
     functional = state.draft_content.get("P3", {}).get("functional", [])
@@ -125,6 +194,175 @@ def _ask_continue(prompt: str) -> bool:
     return answer in ("y", "yes", "是")
 
 
+def _canonical_hash(value: object) -> str:
+    """Hash structured input deterministically for review and provenance."""
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _artifact_identity(state: SessionState, args: argparse.Namespace, *, include_extended: bool = True) -> dict:
+    p1 = state.draft_content.setdefault("P1", {})
+    run_id = getattr(args, "run_id", None) or p1.get("run_id") or f"run_{state.session_id}"
+    project_id = getattr(args, "project_id", None) or p1.get("project_id") or p1.get("doc_id", "unknown")
+    node_id = getattr(args, "node_id", None) or p1.get("node_id") or "root"
+    parent_node_id = getattr(args, "parent_node_id", None) or p1.get("parent_node_id")
+    p1.update({
+        "run_id": run_id, "project_id": project_id, "node_id": node_id,
+        "parent_node_id": parent_node_id,
+        "artifact_id": p1.get("artifact_id") or f"prd:{project_id}:{node_id}:{run_id}",
+        "artifact_type": "prd",
+        "generator": p1.get("generator") or "prd-generation",
+        "created_at": getattr(args, "created_at", None) or p1.get("created_at") or datetime.now(timezone.utc).isoformat(),
+    })
+    if include_extended:
+        p1.setdefault("schema_version", "2.0")
+        p1.setdefault("generator_version", "2.0")
+        p1.setdefault("input_artifacts", [])
+    p1["requirement_ids"] = [item.get("id") for item in [
+        *state.draft_content.get("P3", {}).get("functional", []),
+        *state.draft_content.get("P3", {}).get("non_functional", []),
+    ] if item.get("id")]
+    return p1
+
+
+def _quality_statistics(state: SessionState, review: dict | None = None) -> dict:
+    """Compute report metrics from the structured PRD model, never Markdown."""
+    requirements = state.draft_content.get("P3", {})
+    functional = requirements.get("functional", [])
+    non_functional = requirements.get("non_functional", [])
+    all_items = [*functional, *non_functional]
+    ledger = build_coverage_ledger(requirements, state.draft_content.get("P4", {}).get("contracts", []))
+    ids = [item.get("id") for item in all_items if item.get("id")]
+    known_ids = set(ids)
+    contracts = state.draft_content.get("P4", {}).get("contracts", [])
+    metrics = state.draft_content.get("P5", {}).get("metrics", [])
+    referenced_ids = {
+        str(reference)
+        for item in [*contracts, *metrics]
+        for reference in (item.get("verifies", []) if isinstance(item.get("verifies", []), list) else [item.get("verifies")])
+        if reference and re.fullmatch(r"(?:REQ|NFR)-[A-Z0-9-]+", str(reference), re.IGNORECASE)
+    }
+    responses_by_contract: dict[str, set[tuple[str, ...]]] = {}
+    for contract in contracts:
+        contract_id = str(contract.get("id", ""))
+        responses = contract.get("response", [])
+        if isinstance(responses, str):
+            responses = [responses]
+        if contract_id:
+            responses_by_contract.setdefault(contract_id, set()).add(tuple(map(str, responses)))
+    conflicting_response_count = sum(
+        len(responses) - 1 for responses in responses_by_contract.values() if len(responses) > 1
+    )
+    evidence_backed = sum(bool(item.get("evidence_refs")) for item in all_items)
+    scopes = {scope: sum(item.get("release_scope", "current") == scope for item in all_items)
+              for scope in ("current", "out_of_version", "not_applicable")}
+    sources = {source: sum(item.get("source_kind") == source for item in all_items)
+               for source in ("explicit", "valid_derivation")}
+    current = [item for item in all_items if item.get("release_scope", "current") == "current"]
+    return {
+        "functional_requirement_count": len(functional), "nfr_count": len(non_functional),
+        "release_scope_counts": scopes, "source_kind_counts": sources,
+        "atomic_requirement_ratio": (sum(item.get("requirement_kind", "atomic") == "atomic" for item in current) / len(current)) if current else 0,
+        "functional_oracle_coverage": sum(row["type"] == "functional" and row["status"] == "ready" for row in ledger),
+        "nfr_verification_coverage": sum(row["type"] == "nfr" and row["status"] == "ready" for row in ledger),
+        "ledger_counts": {status: sum(row["status"] == status for row in ledger) for status in ("ready", "blocked", "excluded")},
+        "evidence_backed_requirement_count": evidence_backed,
+        "evidence_coverage_ratio": evidence_backed / len(all_items) if all_items else 0,
+        "unknown_reference_count": len(referenced_ids - known_ids), "duplicate_id_count": len(ids) - len(set(ids)),
+        "conflicting_response_count": conflicting_response_count,
+        "unconfirmed_assumption_count": sum(item.get("source_kind") in {"assumption", "unknown"} for item in all_items),
+        "independent_review_finding_count": len((review or {}).get("findings", [])),
+        "derive_parent_obligation_coverage": 1 if state.mode == "derive" and all_items else None,
+        "derive_projection_used_count": sum("contract_projection:" in " ".join(contract.get("evidence_refs", [])) for contract in state.draft_content.get("P4", {}).get("contracts", [])),
+        "derive_projection_failure_count": 0,
+    }
+
+
+def _structured_prd_model(state: SessionState) -> dict:
+    """Expose the handoff schema and legacy phase containers from one model."""
+    phases = state.draft_content
+    p1, p3 = phases.get("P1", {}), phases.get("P3", {})
+    return {
+        **phases, **p1,
+        "mode": state.mode,
+        "problem_statement": phases.get("P2", {}),
+        "functional_requirements": p3.get("functional", []),
+        "non_functional_requirements": p3.get("non_functional", []),
+        "architecture_input_contract": phases.get("P6", {}),
+        "success_metrics": phases.get("P5", {}).get("metrics", []),
+        "acceptance_contracts": phases.get("P4", {}).get("contracts", []),
+        "oracle_coverage_ledger": build_coverage_ledger(p3, phases.get("P4", {}).get("contracts", [])),
+        "future_backlog": [item for item in [*p3.get("functional", []), *p3.get("non_functional", [])]
+                           if item.get("release_scope", "current") != "current"],
+        "blocking_questions": [],
+    }
+
+
+def _write_root_sidecars(state: SessionState, prd_path: Path, errors: list[str], args: argparse.Namespace, *, status: str, review: dict | None = None) -> None:
+    """Write machine-readable artifacts from the same in-memory PRD model."""
+    root = prd_path.parent
+    root.mkdir(parents=True, exist_ok=True)
+    model = state.draft_content
+    p1 = model.setdefault("P1", {})
+    if status == "PASS":
+        p1.setdefault("status", "complete" if state.mode == "derive" else "approved")
+        p1.setdefault("ready_for_test_generation", True)
+    else:
+        p1["status"] = "draft"
+        p1["ready_for_test_generation"] = False
+    prd_text = prd_path.read_text(encoding="utf-8")
+    identity = _artifact_identity(state, args)
+    (root / "prd.json").write_text(json.dumps(_structured_prd_model(state), ensure_ascii=False, indent=2), encoding="utf-8")
+    (root / "prd_manifest.json").write_text(json.dumps({
+        **identity, "schema_version": "2.0", "status": status, "handoff_status": status,
+        "prd_file": prd_path.name,
+        "prd_sha256": hashlib.sha256(prd_text.encode("utf-8")).hexdigest(),
+        "input_artifacts": model.get("P1", {}).get("input_artifacts", []),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = {
+        "status": status, "errors": errors,
+        "oracle_blocked_count": len(_check_oracle_coverage(state)),
+        "review": review or {"status": "pending"},
+        "quality_statistics": _quality_statistics(state, review),
+    }
+    (root / "validation_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    now = datetime.now(timezone.utc).isoformat()
+    log = {
+        "run_id": identity["run_id"], "project_id": identity["project_id"], "node_id": identity["node_id"],
+        "module": "prd-generation", "code_version": identity.get("generator_version", "unknown"),
+        "schema_version": "2.0", "mode": state.mode, "start_time": now, "end_time": now, "duration_ms": 0,
+        "status": status, "exit_code": 0 if status == "PASS" else EXIT_QUALITY_BLOCKED,
+        "input_artifacts": identity.get("input_artifacts", []),
+        "output_artifacts": [prd_path.name, "prd.json", "prd_manifest.json", "validation_report.json"],
+        "input_hash": _canonical_hash(model), "output_hash": hashlib.sha256(prd_text.encode("utf-8")).hexdigest(),
+        "model": getattr(args, "model", None), "model_parameters": getattr(args, "model_params", None),
+        "random_seed": getattr(args, "seed", None), "retry_count": 0, "token_usage": None, "estimated_cost": None,
+        "human_interventions": 0, "question_count": 0, "oracle_blocked_count": report["oracle_blocked_count"],
+        "review_finding_count": report["quality_statistics"]["independent_review_finding_count"],
+        "warning_count": 0, "error_type": None if status == "PASS" else "QUALITY_BLOCKED",
+        "error_message": None if status == "PASS" else "; ".join(errors),
+    }
+    (root / "execution_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+    if status != "PASS":
+        (root / "blocking_questions.json").write_text(json.dumps({"status": "blocked", "questions": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_review(review_path: str | None, input_hash: str) -> tuple[bool, dict, list[str]]:
+    """Accept only a separately produced, input-bound review artifact."""
+    if not review_path:
+        return False, {"status": "pending"}, ["REVIEW_PENDING: an independent review artifact is required."]
+    try:
+        review = json.loads(Path(review_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return False, {"status": "invalid"}, [f"REVIEW_PENDING: cannot load review artifact: {exc}"]
+    required = ("input_hash", "reviewer", "reviewed_at", "status", "findings")
+    if any(key not in review for key in required) or review.get("input_hash") != input_hash:
+        return False, review, ["REVIEW_PENDING: review artifact is incomplete or targets different input."]
+    if review.get("status") != "passed" or review.get("findings"):
+        return False, review, ["REVIEW_FAILED: independent review has findings or did not pass."]
+    return True, review, []
+
+
 def _write_error_report(state: SessionState, errors: list, args: argparse.Namespace) -> None:
     """Write draft PRD and JSON error report on quality failure."""
     if state.mode == "derive":
@@ -133,7 +371,11 @@ def _write_error_report(state: SessionState, errors: list, args: argparse.Namesp
             print(f"  - {error}")
         return
 
-    # Assemble partial PRD and write to .draft.md
+    # A blocked Root run is always a draft; a normal .md cannot mask failure.
+    p1 = state.draft_content.setdefault("P1", {})
+    p1.update({"status": "draft", "release_scope_frozen": False,
+               "ready_for_test_generation": False, "agent_review_passed": False})
+    _artifact_identity(state, args)
     prd_text = assemble_prd(state.draft_content)
     parent_doc = state.draft_content.get("P1", {}).get("parent_doc", "unknown")
     module_name = state.draft_content.get("P1", {}).get("module_name", "unknown")
@@ -141,6 +383,7 @@ def _write_error_report(state: SessionState, errors: list, args: argparse.Namesp
     draft_path = Path(args.output) if args.output else Path(f"{parent_doc}_{module_name}_prd_v{version}.md")
     if not draft_path.name.endswith(".draft.md"):
         draft_path = draft_path.with_suffix(".draft.md")
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.write_text(prd_text, encoding="utf-8")
 
     # Write JSON error report to .draft.errors.json
@@ -149,6 +392,7 @@ def _write_error_report(state: SessionState, errors: list, args: argparse.Namesp
         json.dumps({"errors": errors}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    _write_root_sidecars(state, draft_path, errors, args, status="FAIL")
 
     print(f"\n草稿PRD已保存至: {draft_path}")
     print(f"错误报告已保存至: {errors_path}")
@@ -232,6 +476,27 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
             print("已取消。可重新运行工具修正内容。")
             return
 
+    # A resumed flow must obey the same review, status, and sidecar contract
+    # as a fresh Root/Derive run.
+    _artifact_identity(state, args)
+    review: dict | None = None
+    if state.mode == "root":
+        input_hash = _canonical_hash(state.draft_content)
+        review_ok, review, review_errors = _load_review(
+            getattr(args, "review_artifact", None), input_hash
+        )
+        if not review_ok:
+            _write_error_report(state, review_errors, args)
+            return EXIT_QUALITY_BLOCKED
+        state.draft_content["P1"].update({
+            "status": "approved", "release_scope_frozen": True,
+            "agent_review_passed": True, "ready_for_test_generation": True,
+            "review_input_hash": input_hash,
+        })
+    else:
+        state.draft_content.setdefault("P1", {}).setdefault("status", "complete")
+    prd_text = assemble_prd(state.draft_content)
+
     # Save PRD to file
     if state.mode == "derive":
         parent_doc = state.draft_content["P1"].get("parent_doc", "unknown")
@@ -243,6 +508,10 @@ def _resume_session(session_path: Path, args: argparse.Namespace) -> None:
         version = state.draft_content["P1"].get("version", "1.0.0")
         output_path = Path(args.output) if args.output else Path(f"{project_name}_prd_v{version}.md")
     output_path.write_text(prd_text, encoding="utf-8")
+    _write_root_sidecars(
+        state, output_path, [], args, status="PASS",
+        review=review or {"status": "inheritance_allocation_gate", "findings": []},
+    )
     print(f"\nPRD已保存至: {output_path}")
 
     # Save session
@@ -323,17 +592,135 @@ def run_root_mode(args: argparse.Namespace) -> None:
             print("已取消。可重新运行工具修正内容。")
             return
 
+    # A Root artifact becomes handoff-ready only after a separately produced,
+    # input-bound review.  Interactive generation is therefore safe by default:
+    # without --review-artifact it emits a draft and exits as quality-blocked.
+    input_hash = _canonical_hash(state.draft_content)
+    review_ok, review, review_errors = _load_review(
+        getattr(args, "review_artifact", None), input_hash
+    )
+    if not review_ok:
+        _write_error_report(state, review_errors, args)
+        return EXIT_QUALITY_BLOCKED
+    state.draft_content["P1"].update({
+        "status": "approved", "release_scope_frozen": True,
+        "agent_review_passed": True, "ready_for_test_generation": True,
+        "review_input_hash": input_hash,
+    })
+    _artifact_identity(state, args)
+    prd_text = assemble_prd(state.draft_content)
+
     # Save PRD to file
     project_name = state.draft_content["P1"].get("project_name", "unknown")
     version = state.draft_content["P1"].get("version", "1.0.0")
     output_path = Path(args.output) if args.output else Path(f"{project_name}_prd_v{version}.md")
     output_path.write_text(prd_text, encoding="utf-8")
+    _write_root_sidecars(state, output_path, [], args, status="PASS", review=review)
     print(f"\nPRD已保存至: {output_path}")
 
     # Save session
     session_path = Path(f".prd_session_{state.session_id}.json")
     save_session(state, session_path)
     print(f"会话已保存至: {session_path}")
+
+
+def _read_structured_input(path: str) -> dict:
+    source = Path(path)
+    try:
+        text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"INPUT_ENCODING_ERROR: {source}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"INPUT_FILE_ERROR: {source}: {exc}") from exc
+    try:
+        payload = json.loads(text) if source.suffix.lower() == ".json" else yaml.safe_load(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"INPUT_PARSE_ERROR: {source}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SchemaIncompatibleError("INPUT_SCHEMA_ERROR: Root input must be a JSON/YAML object.")
+    p1 = payload.get("P1") or payload.get("frontmatter") or {}
+    if p1 is not None and not isinstance(p1, dict):
+        raise SchemaIncompatibleError("INPUT_SCHEMA_ERROR: P1/frontmatter must be an object.")
+    schema_version = payload.get("schema_version") or p1.get("schema_version")
+    if schema_version is not None and str(schema_version) != "2.0":
+        raise SchemaIncompatibleError(
+            f"SCHEMA_INCOMPATIBLE: expected PRD schema_version 2.0, got {schema_version}."
+        )
+    artifact_type = payload.get("artifact_type") or p1.get("artifact_type")
+    if artifact_type is not None and artifact_type != "prd":
+        raise SchemaIncompatibleError(
+            f"SCHEMA_INCOMPATIBLE: expected artifact_type prd, got {artifact_type}."
+        )
+    for canonical, alias in (("P2", "problem_statement"), ("P3", "requirements"),
+                             ("P4", "acceptance"), ("P5", "success_metrics"),
+                             ("P6", "architecture_input")):
+        section = payload.get(canonical, payload.get(alias, {}))
+        if section is not None and not isinstance(section, dict):
+            raise SchemaIncompatibleError(
+                f"INPUT_SCHEMA_ERROR: {canonical}/{alias} must be an object."
+            )
+    requirements = payload.get("P3") or payload.get("requirements") or {}
+    for field in ("functional", "non_functional"):
+        value = requirements.get(field)
+        if value is not None and not isinstance(value, list):
+            raise SchemaIncompatibleError(
+                f"INPUT_SCHEMA_ERROR: P3.{field} must be a list."
+            )
+    return payload
+
+
+def run_root_noninteractive(args: argparse.Namespace) -> int:
+    """Generate a Root artifact without calling input(), for reproducible runs."""
+    try:
+        payload = _read_structured_input(args.input)
+    except SchemaIncompatibleError as exc:
+        print(str(exc))
+        return EXIT_SCHEMA_INCOMPATIBLE
+    except ValueError as exc:
+        print(str(exc))
+        return EXIT_INPUT_ERROR
+    p1 = dict(payload.get("P1") or payload.get("frontmatter") or {})
+    p2 = dict(payload.get("P2") or payload.get("problem_statement") or {})
+    p3 = dict(payload.get("P3") or payload.get("requirements") or {})
+    p4 = dict(payload.get("P4") or payload.get("acceptance") or {})
+    p5 = dict(payload.get("P5") or payload.get("success_metrics") or {})
+    p6 = dict(payload.get("P6") or payload.get("architecture_input") or {})
+    p1.pop("agent_review_passed", None)  # caller-controlled booleans are not review evidence
+    p1.setdefault("doc_id", p1.get("project_id", "root-prd"))
+    p3.setdefault("functional", [])
+    p3.setdefault("non_functional", [])
+    p4.setdefault("contracts", [])
+    p5.setdefault("metrics", [])
+    state = SessionState(
+        session_id=f"sess_{uuid.uuid4().hex[:8]}", mode="root", current_phase="complete",
+        completed_phases=["P1", "P2", "P3", "P4", "P5"],
+        draft_content={"P1": p1, "P2": p2, "P3": p3, "P4": p4, "P5": p5, "P6": p6},
+    )
+    _artifact_identity(state, args, include_extended=False)
+    gaps = _check_oracle_coverage(state)
+    errors = [f"[{gap['id']}] {gap['reason']}" for gap in gaps]
+    if not p3["functional"] and not p3["non_functional"]:
+        errors.append("INPUT_INCOMPLETE: at least one requirement is required.")
+    input_hash = _canonical_hash(state.draft_content)
+    review_ok, review, review_errors = _load_review(getattr(args, "review_artifact", None), input_hash)
+    errors.extend(review_errors)
+    output_root = Path(args.output_dir or args.output or ".")
+    if output_root.suffix:
+        draft_path = output_root.with_name(output_root.stem + ".draft.md")
+        ready_path = output_root
+    else:
+        draft_path = output_root / "prd.draft.md"
+        ready_path = output_root / "prd.md"
+    if errors or getattr(args, "validate_only", False):
+        _write_error_report(state, errors or ["VALIDATE_ONLY"], argparse.Namespace(**{**vars(args), "output": str(draft_path)}))
+        return EXIT_QUALITY_BLOCKED
+    p1.update({"status": "approved", "release_scope_frozen": True, "agent_review_passed": True,
+               "ready_for_test_generation": True, "review_input_hash": input_hash})
+    _artifact_identity(state, args)
+    ready_path.parent.mkdir(parents=True, exist_ok=True)
+    ready_path.write_text(assemble_prd(state.draft_content), encoding="utf-8")
+    _write_root_sidecars(state, ready_path, [], args, status="PASS", review=review)
+    return EXIT_SUCCESS
 
 
 def run_derive_mode(args: argparse.Namespace) -> int:
@@ -356,12 +743,19 @@ def run_derive_mode(args: argparse.Namespace) -> int:
 
     # 2. Parse parent documents
     target_module = args.target_module
-    context = build_derive_context(
-        Path(args.parent_prd),
-        Path(architecture_input),
-        target_module,
-        target_granularity=target_granularity,
-    )
+    try:
+        context = build_derive_context(
+            Path(args.parent_prd),
+            Path(architecture_input),
+            target_module,
+            target_granularity=target_granularity,
+        )
+    except FileNotFoundError:
+        print(f"INPUT_FILE_ERROR: parent PRD not found: {args.parent_prd}")
+        return EXIT_INPUT_ERROR
+    except UnicodeDecodeError as exc:
+        print(f"INPUT_ENCODING_ERROR: {exc}")
+        return EXIT_DEPENDENCY_ERROR
 
     # 3. Auto-fix module name via edit distance matching
     if not context["success"]:
@@ -391,6 +785,8 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     external_dependencies: list[dict] = []
     data_assets: list[dict] = []
     related_acceptance_contracts = context.get("related_acceptance_contracts", [])
+    related_non_functional = context.get("related_non_functional", [])
+    related_success_metrics = context.get("related_success_metrics", [])
     implementation_surfaces = context.get("implementation_surfaces", [])
 
     # 4. Keep a transparent parent-coverage ledger without blocking this target.
@@ -496,11 +892,12 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     phase3 = RequirementsPhase(state)
     functional = []
     parent_to_child: dict[str, str] = {}
-    for index, req in enumerate(authoritative_requirements, start=1):
+    used_derived_ids: set[str] = set()
+    for req in authoritative_requirements:
         req_id = req.get("id", "REQ-UNKNOWN")
         req_text = _clean_req_text(req.get("text", ""))
         parent_priority = req.get("priority", "Must Have")
-        child_id = f"REQ-D{index:03d}"
+        child_id = _derived_requirement_id("REQ", req_id, used_derived_ids)
         parent_to_child[req_id] = child_id
         child_req = {
             "id": child_id,
@@ -522,342 +919,13 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         }
         functional.append(child_req)
 
-    architecture_req_index = 1
-    interface_req_ids: dict[str, str] = {}
-    parent_arch_to_child: dict[str, str] = {}
-    # Architecture determines child ownership only. Derive must not turn
-    # architecture descriptions into new product requirements.
-    artifact_parent_refs: dict[str, list[str]] = {}
-
-    frontend_requirement_id: str | None = None
-    frontend_related_reqs = [
-        parent_to_child[req.get("id", "")]
-        for req in authoritative_requirements
-        if "frontend" in context.get("requirement_surfaces", {}).get(req.get("id", ""), [])
-        and req.get("id", "") in parent_to_child
-    ]
-    if (
-        "frontend" in implementation_surfaces
-        and frontend_related_reqs
-        and artifact_parent_refs.get("frontend")
-    ):
-        frontend_requirement_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_frontend_refs = list(dict.fromkeys(artifact_parent_refs.get("frontend", [])))
-        for parent_ref in parent_frontend_refs:
-            parent_arch_to_child[parent_ref] = frontend_requirement_id
-        frontend_contracts = [
-            " ".join(
-                part
-                for part in (interface.get("method", ""), interface.get("path", ""))
-                if part
-            )
-            for interface in actionable_interfaces
-            if "web app" in str(interface.get("consumer", "")).casefold()
-        ]
-        contract_clause = (
-            f"并通过父架构声明的 {', '.join(frontend_contracts)} 完成交互"
-            if frontend_contracts
-            else "并通过父架构声明的公开接口完成交互"
-        )
-        functional.append(
-            {
-                "id": frontend_requirement_id,
-                "text": (
-                    f"{module_name} 必须提供可部署、可测试的学生端前端实现，包含完成 "
-                    f"{', '.join(frontend_related_reqs)} 及其父级验收场景所需的页面、组件、交互状态和 API 客户端，"
-                    f"{contract_clause}；输入、点击、选择、上传、禁用、展示、错误提示和重试等可观察行为"
-                    "不得以 API 实现或后端测试替代。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_frontend_refs)
-                    if parent_frontend_refs
-                    else "ARCH:03-runtime-architecture.md#Web App"
-                ),
-                "related_reqs": frontend_related_reqs,
-                "source_kind": "architecture_frontend",
-                "implementation_surfaces": ["frontend"],
-            }
-        )
-
-    for interface in actionable_interfaces:
-        interface_id = interface.get("contract_id") or interface.get("name") or interface.get("path")
-        child_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        interface_req_ids[str(interface_id)] = child_id
-        parent_interface_refs = context.get("interface_parent_refs", {}).get(str(interface_id), [])
-        if not parent_interface_refs:
-            continue
-        for parent_ref in parent_interface_refs:
-            parent_arch_to_child[parent_ref] = child_id
-        operation = " ".join(
-            part for part in (interface.get("method", ""), interface.get("path", "")) if part
-        )
-        request_fields = ", ".join(interface.get("request_fields", []))
-        response_fields = ", ".join(interface.get("response_fields", []))
-        error_codes = ", ".join(interface.get("error_codes", []))
-        error_clause = f"；错误码仅使用架构已声明的 {error_codes}" if error_codes else ""
-        interface_role = interface.get("ownership_role", "provider")
-        role_clause = {
-            "consumer": "必须集成、消费并处理父架构接口",
-            "provider_and_consumer": "必须提供、集成并消费父架构接口",
-        }.get(interface_role, "必须提供并实现父架构接口")
-        functional.append(
-            {
-                "id": child_id,
-                "text": (
-                    f"{module_name} {role_clause} {interface.get('name', interface_id)}（{operation}）："
-                    f"输入字段为 {request_fields}；输出字段为 {response_fields}{error_clause}。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_interface_refs)
-                    if parent_interface_refs
-                    else f"ARCH:06-interface-contracts.md#{interface_id}"
-                ),
-                "source_kind": "architecture_interface",
-                "implementation_surfaces": ["api_backend"],
-            }
-        )
-
-    data_requirement_id: str | None = None
-    if data_assets and context.get("data_parent_refs", []):
-        data_requirement_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_data_refs = context.get("data_parent_refs", [])
-        for parent_ref in parent_data_refs:
-            parent_arch_to_child[parent_ref] = data_requirement_id
-        asset_names = ", ".join(asset.get("name", "UNKNOWN") for asset in data_assets)
-        functional.append(
-            {
-                "id": data_requirement_id,
-                "text": (
-                    f"{module_name} 必须为父架构定义的数据聚合 {asset_names} 及其在 05-data-model.md 中声明的"
-                    "实体和必需字段提供版本化持久化结构与数据库迁移，并验证迁移可在受支持的空数据库上完整创建所需结构。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_data_refs)
-                    if parent_data_refs
-                    else "ARCH:05-data-model.md"
-                ),
-                "source_kind": "architecture_data",
-                "implementation_surfaces": ["database_migration"],
-            }
-        )
-
-    event_req_ids: dict[str, str] = {}
-    for event in events:
-        event_key = str(event.get("contract_id") or event.get("event_name"))
-        child_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        event_req_ids[event_key] = child_id
-        parent_event_refs = artifact_parent_refs.get(f"event:{event_key}", [])
-        if not parent_event_refs:
-            continue
-        for parent_ref in parent_event_refs:
-            parent_arch_to_child[parent_ref] = child_id
-        required_fields = ", ".join(event.get("required_fields", []))
-        produced_fields = ", ".join(event.get("produced_fields", []))
-        functional.append(
-            {
-                "id": child_id,
-                "text": (
-                    f"{module_name} 必须按父架构事件契约生成、发布或处理事件 {event.get('event_name', event_key)}："
-                    f"发布者为 {event.get('publisher', 'UNKNOWN')}；消费者为 {event.get('consumers', 'UNKNOWN')}；"
-                    f"必需字段为 {required_fields}；产出字段为 {produced_fields}；"
-                    f"副作用为 {event.get('side_effects', 'None')}。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_event_refs)
-                    if parent_event_refs
-                    else f"ARCH:06-interface-contracts.md#{event_key}"
-                ),
-                "source_kind": "architecture_event",
-                "implementation_surfaces": ["domain_logic"],
-            }
-        )
-
-    adapter_req_ids: dict[str, str] = {}
-    for dependency in external_dependencies:
-        dependency_name = str(dependency.get("name", "UNKNOWN"))
-        normalized_dependency = "".join(ch.lower() for ch in dependency_name if ch.isalnum())
-        artifact_key = f"adapter:{normalized_dependency}"
-        child_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        adapter_req_ids[normalized_dependency] = child_id
-        parent_adapter_refs = artifact_parent_refs.get(artifact_key, [])
-        if not parent_adapter_refs:
-            continue
-        for parent_ref in parent_adapter_refs:
-            parent_arch_to_child[parent_ref] = child_id
-        evidence = _clean_req_text(str(dependency.get("evidence", "父架构依赖声明")))
-        functional.append(
-            {
-                "id": child_id,
-                "text": (
-                    f"{module_name} 必须提供外部依赖适配器 {dependency_name}，并按父架构证据“{evidence}”"
-                    "封装调用、失败处理和领域边界，禁止把适配器实现视为外部团队自动提供。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_adapter_refs)
-                    if parent_adapter_refs
-                    else f"ARCH:{dependency.get('source', 'architecture')}#{dependency_name}"
-                ),
-                "source_kind": "architecture_adapter",
-                "implementation_surfaces": ["external_adapter"],
-            }
-        )
-
-    worker_requirement_id: str | None = None
-    if "worker_job" in implementation_surfaces and artifact_parent_refs.get("worker"):
-        worker_requirement_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_worker_refs = artifact_parent_refs.get("worker", [])
-        for parent_ref in parent_worker_refs:
-            parent_arch_to_child[parent_ref] = worker_requirement_id
-        functional.append(
-            {
-                "id": worker_requirement_id,
-                "text": (
-                    f"{module_name} 必须提供父架构定义的 Worker/调度作业入口，执行该模块拥有的定时或异步行为，"
-                    "并记录可验证的成功、失败与重试结果。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_worker_refs)
-                    if parent_worker_refs
-                    else "ARCH:03-runtime-architecture.md#worker"
-                ),
-                "source_kind": "architecture_worker",
-                "implementation_surfaces": ["worker_job"],
-            }
-        )
-
-    runtime_requirement_id: str | None = None
-    if (
-        "integration_wiring" in implementation_surfaces
-        and artifact_parent_refs.get(f"runtime:{module_name}")
-    ):
-        runtime_requirement_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_runtime_refs = artifact_parent_refs.get(f"runtime:{module_name}", [])
-        for parent_ref in parent_runtime_refs:
-            parent_arch_to_child[parent_ref] = runtime_requirement_id
-        functional.append(
-            {
-                "id": runtime_requirement_id,
-                "text": (
-                    f"{module_name} 必须提供可由父层运行时装配的公开入口、配置和集成连接点，"
-                    "并验证模块在父架构部署拓扑中可启动且已声明契约可达；父层 wiring 不得被当作无需实现。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_runtime_refs)
-                    if parent_runtime_refs
-                    else "ARCH:03-runtime-architecture.md;ARCH:08-deployment.md"
-                ),
-                "source_kind": "architecture_runtime",
-                "implementation_surfaces": ["integration_wiring"],
-            }
-        )
-
-    observability_requirement_id: str | None = None
-    related_success_metrics = context.get("related_success_metrics", [])
-    related_non_functional = context.get("related_non_functional", [])
-    observable_nfrs = [
-        nfr
-        for nfr in related_non_functional
-        if any(
-            marker in nfr.get("text", "").casefold()
-            for marker in ("p95", "p99", "%", "成功率", "可追溯", "审计", "测量", "日志", "指标")
-        )
-    ]
-    if (
-        (related_success_metrics or observable_nfrs)
-        and artifact_parent_refs.get(f"observability:{module_name}")
-    ):
-        observability_requirement_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_observability_refs = artifact_parent_refs.get(
-            f"observability:{module_name}",
-            [],
-        )
-        for parent_ref in parent_observability_refs:
-            parent_arch_to_child[parent_ref] = observability_requirement_id
-        metric_parts = [
-            f"{metric.get('name', metric.get('id', 'metric'))} {metric.get('target', '')}".strip()
-            for metric in related_success_metrics
-        ]
-        metric_parts.extend(
-            f"{nfr.get('id', 'NFR')} {nfr.get('text', '')}" for nfr in observable_nfrs
-        )
-        metric_summary = "; ".join(metric_parts)
-        metric_refs = [
-            metric.get("id") or metric.get("name", "metric")
-            for metric in related_success_metrics
-        ]
-        metric_refs.extend(nfr.get("id", "NFR") for nfr in observable_nfrs)
-        functional.append(
-            {
-                "id": observability_requirement_id,
-                "text": (
-                    f"{module_name} 必须记录并提供可验证的观测证据以测量父级成功指标：{metric_summary}；"
-                    "证据的统计口径、起止点和排除条件必须沿用父级定义。"
-                ),
-                "priority": "Must Have",
-                "parent_req": (
-                    ", ".join(parent_observability_refs)
-                    if parent_observability_refs
-                    else "MET:" + ", ".join(metric_refs)
-                ),
-                "source_kind": "architecture_observability",
-                "implementation_surfaces": ["observability"],
-            }
-        )
-
-    inherited_architecture_req_ids: dict[str, str] = {}
-    related_architecture_requirements: list[dict] = []
-    for parent_arch_req in related_architecture_requirements:
-        parent_id = parent_arch_req.get("id", "")
-        if not parent_id or parent_id in parent_arch_to_child:
-            continue
-        child_id = f"REQ-A{architecture_req_index:03d}"
-        architecture_req_index += 1
-        parent_arch_to_child[parent_id] = child_id
-        inherited_architecture_req_ids[parent_id] = child_id
-        source_kind = parent_arch_req.get("source_kind", "architecture_inherited")
-        default_surfaces = {
-            "architecture_frontend": ["frontend"],
-            "architecture_event": ["domain_logic"],
-            "architecture_adapter": ["external_adapter"],
-            "architecture_worker": ["worker_job"],
-        }.get(source_kind, ["domain_logic"])
-        functional.append(
-            {
-                "id": child_id,
-                "text": (
-                    f"{module_name} 应在自身架构边界内继续满足父级架构义务："
-                    f"{_clean_req_text(parent_arch_req.get('text', ''))}"
-                ),
-                "priority": parent_arch_req.get("priority", "Must Have"),
-                "parent_req": parent_id,
-                "source_kind": source_kind,
-                "implementation_surfaces": parent_arch_req.get(
-                    "implementation_surfaces",
-                    default_surfaces,
-                ),
-            }
-        )
-
+    # Architecture is recorded only as non-normative references; it cannot create product requirements.
     non_functional = []
     parent_nfr_to_child: dict[str, str] = {}
-    for index, nfr in enumerate(related_non_functional, start=1):
-        child_nfr_id = f"NFR-D{index:03d}"
-        parent_nfr_to_child[nfr.get("id", "NFR-UNKNOWN")] = child_nfr_id
+    for nfr in related_non_functional:
+        parent_nfr_id = nfr.get("id", "NFR-UNKNOWN")
+        child_nfr_id = _derived_requirement_id("NFR", parent_nfr_id, used_derived_ids)
+        parent_nfr_to_child[parent_nfr_id] = child_nfr_id
         non_functional.append(
             {
                 "id": child_nfr_id,
@@ -871,6 +939,10 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             }
         )
     phase3.collect(functional=functional, non_functional=non_functional)
+    state.draft_content["P1"]["requirement_id_mapping"] = {
+        **parent_to_child,
+        **parent_nfr_to_child,
+    }
     state.draft_content["P3"]["non_goals"] = list(context.get("non_goals", []))
 
     derive_gate_errors: list[str] = []
@@ -897,14 +969,21 @@ def run_derive_mode(args: argparse.Namespace) -> int:
     contract_projections = _load_contract_projections(
         getattr(args, "architecture_package", None) or getattr(args, "parent_architecture", "")
     )
-    parent_reference_mapping = {**parent_to_child, **parent_nfr_to_child, **parent_arch_to_child}
+    parent_reference_mapping = {**parent_to_child, **parent_nfr_to_child}
     parent_requirement_records = [*authoritative_requirements, *related_non_functional]
     for parent_contract in related_acceptance_contracts:
         verifies = parent_contract.get("verifies", [])
         if isinstance(verifies, str):
             verifies = [verifies]
+        projection = contract_projections.get(
+            (module_name, parent_contract.get("id", ""))
+        )
+        additional_verifies = projection.get("legacy_additional_verifies", []) if projection else []
+        if isinstance(additional_verifies, str):
+            additional_verifies = [additional_verifies]
+        effective_verifies = list(dict.fromkeys([*verifies, *additional_verifies]))
         mapped = _map_parent_references(
-            verifies,
+            effective_verifies,
             parent_requirement_records,
             parent_reference_mapping,
         )
@@ -912,21 +991,18 @@ def run_derive_mode(args: argparse.Namespace) -> int:
             continue
         mapped_parent_refs = [
             reference
-            for reference in verifies
+            for reference in effective_verifies
             if _map_parent_references(
                 [reference], parent_requirement_records, parent_reference_mapping
             )
         ]
-        projection = contract_projections.get(
-            (module_name, parent_contract.get("id", ""))
-        )
-        if len(mapped_parent_refs) < len(verifies) and not projection:
+        if len(mapped_parent_refs) < len(effective_verifies) and not projection:
             contract_projection_errors.append(
                 f"Partial parent contract {parent_contract.get('id', 'UNKNOWN')} for {module_name} "
                 "requires acceptance-contract-projections.yaml."
             )
             continue
-        contract = dict(parent_contract)
+        contract = _normalize_inherited_contract_pairs(parent_contract)
         parent_contract_id = parent_contract.get("id", "AC-UNKNOWN")
         contract["id"] = (
             parent_contract_id
@@ -1003,6 +1079,7 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         return EXIT_QUALITY_BLOCKED
     phase5.collect(metrics=metrics)
 
+    _artifact_identity(state, args)
     prd_text = assemble_prd(state.draft_content)
     if args.output:
         output_path = Path(args.output)
@@ -1016,6 +1093,10 @@ def run_derive_mode(args: argparse.Namespace) -> int:
         output_path = Path(f"{context['parent_doc_id']}_{module_name}_prd_v1.0.0.md")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(prd_text, encoding="utf-8")
+    _write_root_sidecars(
+        state, output_path, [], args, status="PASS",
+        review={"status": "inheritance_allocation_gate", "findings": []},
+    )
     print(f"\nPRD已保存至: {output_path}")
     return EXIT_SUCCESS
 
@@ -1256,6 +1337,7 @@ def _prompt_derive_inputs(args: argparse.Namespace) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="PRD Flow - Interactive PRD generation")
+    parser.add_argument("--input", help="JSON/YAML evidence and product-decision input for non-interactive Root mode")
     parser.add_argument("--parent-prd", help="Path to parent PRD document")
     parser.add_argument("--architecture-package", help="Path to architecture package directory, README.md, or zip")
     parser.add_argument("--parent-architecture", help="Legacy alias for --architecture-package")
@@ -1276,27 +1358,48 @@ def main(argv: list[str] | None = None) -> int:
         help="Target level for Derive mode",
     )
     parser.add_argument("--resume", help="Path to session file to resume")
+    parser.add_argument("--run-id")
+    parser.add_argument("--project-id")
+    parser.add_argument("--node-id")
+    parser.add_argument("--parent-node-id")
+    parser.add_argument("--model")
+    parser.add_argument("--model-params")
+    parser.add_argument("--seed")
+    parser.add_argument("--created-at", help="ISO-8601 creation time; set it for byte-reproducible artifacts")
+    parser.add_argument("--review-artifact", help="Independent review JSON bound to the canonical input hash")
+    parser.add_argument("--validate-only", action="store_true", help="Validate a non-interactive Root input and emit only draft artifacts")
     parser.add_argument("--output", "-o", help="输出PRD文件路径")
 
     args = parser.parse_args(argv)
 
     if args.resume:
-        _resume_session(Path(args.resume), args)
-        return EXIT_SUCCESS
+        try:
+            return _resume_session(Path(args.resume), args) or EXIT_SUCCESS
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            print(f"Resume dependency error: {exc}")
+            return EXIT_DEPENDENCY_ERROR
+
+    if args.input:
+        return run_root_noninteractive(args)
 
     # Interactive mode selection
     mode = _select_mode_interactive(args)
 
-    if mode == Mode.DERIVE:
-        if args.derive_all:
-            if not args.parent_prd or not (args.architecture_package or args.parent_architecture) or not args.output_dir:
-                parser.error("--derive-all requires --parent-prd, --architecture-package, and --output-dir")
-            return run_derive_all_mode(args)
-        args = _prompt_derive_inputs(args)
-        return run_derive_mode(args)
-    else:
-        run_root_mode(args)
-        return EXIT_SUCCESS
+    try:
+        if mode == Mode.DERIVE:
+            if args.derive_all:
+                if not args.parent_prd or not (args.architecture_package or args.parent_architecture) or not args.output_dir:
+                    parser.error("--derive-all requires --parent-prd, --architecture-package, and --output-dir")
+                return run_derive_all_mode(args)
+            args = _prompt_derive_inputs(args)
+            return run_derive_mode(args)
+        return run_root_mode(args) or EXIT_SUCCESS
+    except UnicodeDecodeError as exc:
+        print(f"Dependency/input encoding error: {exc}")
+        return EXIT_DEPENDENCY_ERROR
+    except Exception as exc:  # CLI boundary: never turn a failure into success.
+        print(f"Runtime error: {exc}")
+        return EXIT_RUNTIME_ERROR
 
 
 if __name__ == "__main__":

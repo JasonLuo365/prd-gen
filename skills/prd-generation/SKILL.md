@@ -168,12 +168,34 @@ When a downstream quality report blocks an existing PRD, do not restart Root eli
 4. Update the PRD in place as a new version, recompute the ledger, and run the full release gate.
 5. A downstream report saying “partial”, “blocked”, or “needs review” can never be converted to ready by changing metadata alone.
 
+## Executable Entrypoints
+
+Run the bundled launcher from a clean extracted package; do not ask callers to set `PYTHONPATH`:
+
+```powershell
+python skills/prd-generation/scripts/run_prd_flow.py --help
+```
+
+For reproducible Root experiments, provide a UTF-8 JSON/YAML input with `P1`…`P6` (or the documented phase aliases), explicit evidence, requirements, contracts, and metrics. Provide identity/model fields on the command line and an independently produced review artifact. `--validate-only` writes only the blocked draft/sidecars and never calls `input()`.
+
+```powershell
+python skills/prd-generation/scripts/run_prd_flow.py `
+  --input <root-input.json> --output-dir <output-dir> `
+  --run-id <run-id> --project-id <project-id> --node-id <node-id> `
+  --model <model> --model-params <json> --seed <seed> `
+  --review-artifact <review.json>
+```
+
+The review artifact must be a separate execution and contain the canonical `input_hash`, reviewer/model, timestamp, findings, and `status: passed`. A caller-supplied `agent_review_passed` boolean is never review evidence. Every Root run writes `prd.json`, `prd_manifest.json`, `validation_report.json`, and `execution_log.json` from the same in-memory model; blocked runs also write `blocking_questions.json`.
+
+Use exit codes consistently: `0` handoff-ready success; `2` quality/oracle/scope/inheritance/review block; `3` dependency/configuration/environment error; `4` unhandled runtime error; `5` schema/contract incompatibility. Input errors use `1` and must not be reported as success.
+
 ## Derive Workflow
 
 Use the bundled backend:
 
 ```powershell
-python skills/prd-generation/scripts/prd_flow/main.py `
+python skills/prd-generation/scripts/run_prd_flow.py `
   --parent-prd <path> `
   --architecture-package <path> `
   --target-module <name> `
@@ -186,7 +208,7 @@ Use explicit `--output <path>` instead when a single derived PRD must be written
 To derive every direct child declared by one architecture layer, use the full-layer command:
 
 ```powershell
-python skills/prd-generation/scripts/prd_flow/main.py `
+python skills/prd-generation/scripts/run_prd_flow.py `
   --derive-all `
   --parent-prd <path> `
   --architecture-package <path> `
@@ -248,6 +270,8 @@ ready_for_test_generation: true
 oracle_blocked_count: 0
 review_method: independent_agent
 ```
+
+Also preserve the shared identity fields without renaming them: `run_id`, `project_id`, `node_id`, `parent_node_id`, `artifact_id`, `artifact_type`, `created_at`, `generator`, `status`, `input_artifacts`, and `requirement_ids`. The manifest carries all of them; include the applicable PRD/handoff fields in frontmatter.
 
 Set readiness fields to false/nonzero for a draft. Never claim readiness merely because the Markdown was produced.
 

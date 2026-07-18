@@ -1,0 +1,9 @@
+{
+  "schema_version": "2.0",
+  "artifact_type": "prd",
+  "required_manifest_fields": ["artifact_id", "schema_version", "status", "prd_sha256", "requirement_ids"],
+  "ready_requirements": {"status": "PASS", "prd_status": ["approved", "complete"], "ready_for_test_generation": true},
+  "draft_requirements": {"status": "FAIL", "prd_status": "draft", "ready_for_test_generation": false},
+  "consumers": ["prd-to-architecture", "prd-to-gherkin"],
+  "forbidden_fields": ["Feature", "Scenario", "Given", "When", "Then", "gherkin"]
+}

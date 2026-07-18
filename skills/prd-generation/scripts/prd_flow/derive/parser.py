@@ -44,24 +44,7 @@ ARCH_FILE_ALIASES = {
 
 VALID_GRANULARITIES = {"auto", "deployable_module", "bounded_context", "component"}
 
-EXTERNAL_NAMES = [
-    "Telegram Bot API",
-    "Telegram",
-    "PC OS / Applications",
-    "PC OS / Apps",
-    "SMS Gateway",
-    "Object Storage",
-    "LLM Service",
-    "Math Recognition Service",
-    "OCR Service",
-    "PostgreSQL",
-    "Redis",
-    "Kafka",
-    "RabbitMQ",
-    "Redis Streams",
-    "S3",
-    "MinIO",
-]
+EXTERNAL_NAMES: list[str] = []  # derive external names only from input evidence
 
 
 def parse_parent_prd(path: Path) -> dict:
@@ -203,6 +186,24 @@ def _parse_structured_requirements(content: str) -> dict[str, list[dict[str, Any
         cells = _split_markdown_row(raw_line)
         if len(cells) >= 2:
             first = _clean_markdown(cells[0])
+            if (
+                not in_nfr_section
+                and not in_exclusion_section
+                and re.fullmatch(r"REQ-[A-Z0-9-]+", first, re.IGNORECASE)
+            ):
+                requirements.append(
+                    {
+                        "id": first.upper(),
+                        "text": _clean_markdown(cells[1]),
+                        "priority": _clean_markdown(cells[2]) if len(cells) > 2 else "Must Have",
+                        "release_scope": "current",
+                        "requirement_kind": "atomic",
+                        "evidence_refs": [
+                            _clean_markdown(cells[3])
+                        ] if len(cells) > 3 and _clean_markdown(cells[3]) else [],
+                    }
+                )
+                continue
             if re.fullmatch(r"CLAUSE-[A-Z0-9-]+", first, re.IGNORECASE) and current:
                 requirements.append(
                     {
@@ -246,7 +247,16 @@ def _parse_structured_requirements(content: str) -> dict[str, list[dict[str, Any
                     }
                 )
 
-    return {"requirements": requirements, "non_functional": non_functional}
+    deduped_requirements = {
+        item["id"]: item for item in reversed(requirements) if item.get("id")
+    }
+    deduped_non_functional = {
+        item["id"]: item for item in reversed(non_functional) if item.get("id")
+    }
+    return {
+        "requirements": list(reversed(list(deduped_requirements.values()))),
+        "non_functional": list(reversed(list(deduped_non_functional.values()))),
+    }
 
 
 def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
@@ -263,7 +273,7 @@ def _parse_acceptance_contracts(content: str) -> list[dict[str, Any]]:
     for raw_line in section.splitlines():
         stripped = raw_line.strip()
         contract_match = re.match(
-            r"^##\s+((?:D-)*(?:AC|NFR-AC)-[A-Z0-9-]+)(?:\s+.*)?$",
+            r"^#{2,3}\s+((?:D-)*(?:AC|NFR-AC)-[A-Z0-9-]+)(?:\s+.*)?$",
             stripped,
             re.IGNORECASE,
         )
@@ -412,7 +422,7 @@ def _parse_success_metrics(content: str) -> list[dict[str, str]]:
         name = _clean_markdown(cells[0])
         if name.casefold() in {"指标", "id", "metric", "name"}:
             continue
-        metric_id = re.match(r"((?:MET|METRIC)-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", name, re.IGNORECASE)
+        metric_id = re.match(r"((?:SM|MET|METRIC)-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", name, re.IGNORECASE)
         if metric_id and len(cells) >= 5:
             metrics.append(
                 {
@@ -698,6 +708,7 @@ def _build_markdown_catalog(source: dict[str, Any], target_granularity: str) -> 
     interfaces = _extract_all_interfaces(contract_content)
     events = _extract_event_contracts(contract_content)
     metric_contracts = _extract_metric_contracts(contract_content)
+    metric_contracts.extend(_extract_success_metric_allocations(files))
     data_assets = _extract_data_assets(files.get("05-data-model.md", ""), all_units)
     all_names = _unique(available_modules + EXTERNAL_NAMES)
     enriched_units: list[dict[str, Any]] = []
@@ -829,20 +840,44 @@ def _parse_deployable_modules(content: str) -> list[dict[str, Any]]:
     modules: list[dict[str, Any]] = []
     columns: dict[str, int] = {}
     for line in content.splitlines():
+        if columns and line.strip() and not line.lstrip().startswith("|"):
+            columns = {}
         cells = _split_markdown_row(line)
         if len(cells) < 3:
             continue
         normalized = [_clean_markdown(cell).casefold() for cell in cells]
+        if normalized[0] in {"module_id", "moduleid"} and "module" in normalized:
+            source_index = next(
+                (
+                    index
+                    for index, heading in enumerate(normalized)
+                    if "source requirement" in heading
+                    or heading in {"requirement", "requirements", "source req"}
+                ),
+                3 if len(cells) > 3 else len(cells) - 1,
+            )
+            columns = {
+                "module id": 0,
+                "responsibility": normalized.index("module"),
+                "primary source": source_index,
+            }
+            continue
         if "module" in normalized:
             if normalized[0] == "module" and "responsibility" in normalized:
                 columns = {name: index for index, name in enumerate(normalized)}
+                # Architecture packages use several neutral names for the
+                # explicit parent-allocation column.  Preserve it as evidence
+                # only; it never authorizes creating a product requirement.
+                for heading, index in list(columns.items()):
+                    if heading in {"source requirement", "source requirements", "requirement", "requirements", "source req"}:
+                        columns.setdefault("primary source", index)
             else:
                 columns = {}
             continue
         if normalized[0] in {"bounded context", "external system"}:
             columns = {}
             continue
-        name = _clean_markdown(cells[0])
+        name = _clean_markdown(cells[columns["module id"]]) if "module id" in columns else _clean_markdown(cells[0])
         if (
             not columns
             and (not _has_bold(cells[0]) or not _looks_like_module_name(name))
@@ -883,7 +918,7 @@ def _expand_requirement_refs(text: str) -> list[str]:
     refs: list[str] = []
     pattern = re.compile(
         r"(?<![A-Za-z0-9])"
-        r"(?:(?P<prefix>REQ|NFR|FR|UC|QAS)-)?"
+        r"(?:(?P<prefix>REQ|NFR|FR|UC|QAS|SM)-)?"
         r"(?P<derived>D)?(?P<start>\d{3})"
         r"(?:\s*[~–—-]\s*(?:(?P<end_prefix>REQ|NFR|FR|UC|QAS)-)?"
         r"(?P<end_derived>D)?(?P<end>\d{3}))?",
@@ -891,6 +926,8 @@ def _expand_requirement_refs(text: str) -> list[str]:
     )
     for match in pattern.finditer(text):
         prefix = (match.group("prefix") or match.group("end_prefix") or "REQ").upper()
+        if prefix == "SM":
+            continue
         derived = bool(match.group("derived") or match.group("end_derived"))
         first = int(match.group("start"))
         last = int(match.group("end")) if match.group("end") else first
@@ -1571,6 +1608,40 @@ def _extract_metric_contracts(content: str) -> list[dict[str, Any]]:
         metric["complete"] = not missing
         metric["missing"] = missing
         metrics.append(metric)
+    return metrics
+
+
+def _extract_success_metric_allocations(files: dict[str, str]) -> list[dict[str, Any]]:
+    """Read explicit owner allocations from architecture-package YAML blocks."""
+    metrics: list[dict[str, Any]] = []
+    for source, content in files.items():
+        for block in re.findall(r"```ya?ml\s*\n(.*?)```", content, re.IGNORECASE | re.DOTALL):
+            data = _try_load_yaml(block)
+            if not isinstance(data, dict):
+                continue
+            allocations = data.get("success_metric_allocations")
+            if not isinstance(allocations, list):
+                continue
+            for allocation in allocations:
+                if not isinstance(allocation, dict):
+                    continue
+                metric_id = str(allocation.get("sm_id") or allocation.get("metric_id") or "").strip()
+                owner = str(allocation.get("owning_module") or allocation.get("owner") or "").strip()
+                if not metric_id or not owner:
+                    continue
+                metrics.append({
+                    "metric_id": metric_id,
+                    "owner": owner,
+                    "source_evidence": str(allocation.get("measurement_source") or ""),
+                    "start": "architecture allocation",
+                    "end": "architecture allocation",
+                    "threshold": str(allocation.get("target") or ""),
+                    "exclusions": "",
+                    "evidence": source,
+                    "source": source,
+                    "complete": True,
+                    "missing": [],
+                })
     return metrics
 
 

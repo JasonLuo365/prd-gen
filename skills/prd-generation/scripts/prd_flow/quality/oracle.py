@@ -80,6 +80,13 @@ def validate_acceptance_contract(contract: dict) -> list[str]:
                     isinstance(item, str)
                     and any(separator in item for separator in ("->", "=>", "→"))
                 )
+                if (
+                    not complete_pair
+                    and contract.get("_inherited_legacy_pair_text", False)
+                    and isinstance(item, str)
+                    and _is_present(item)
+                ):
+                    complete_pair = True
                 if not complete_pair:
                     issues.append(f"incomplete {field}[{index}] condition/response pair")
     if not _is_present(contract.get("evidence_refs")):

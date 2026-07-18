@@ -1,4 +1,4 @@
 interface:
   display_name: "PRD Generation"
-  short_description: "Generate oracle-ready PRDs for downstream test generation."
-  default_prompt: "Create an atomic, oracle-complete PRD, close all blocking product decisions before handoff, and do not generate test cases or Gherkin."
+  short_description: "Generate or derive evidence-preserving, oracle-ready PRDs."
+  default_prompt: "Create or derive an atomic, oracle-complete PRD; close all blocking decisions, preserve parent semantics, and do not generate test cases or Gherkin."

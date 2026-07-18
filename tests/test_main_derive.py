@@ -40,6 +40,8 @@ def test_derive_succeeds_only_with_explicit_parent_contract(build, _save, tmp_pa
     build.return_value = context([contract()])
     result = run_derive_mode(args(tmp_path))
     assert result == EXIT_SUCCESS
+    for filename in ("prd.json", "prd_manifest.json", "validation_report.json", "execution_log.json"):
+        assert (tmp_path / filename).exists()
     text = (tmp_path / "derived.md").read_text(encoding="utf-8")
     assert "D-AC-ROOT-001" in text
     assert "parent_acceptance_contract:AC-ROOT-001" in text
@@ -140,6 +142,31 @@ def test_derive_applies_generic_child_contract_projection(build, tmp_path):
     text = (tmp_path / "derived.md").read_text(encoding="utf-8")
     assert "actor: child actor" in text
     assert "contract_projection:Recommendation Module:project" in text
+
+
+@patch("prd_flow.main.build_derive_context")
+def test_derive_accepts_legacy_shared_contract_projection(build, tmp_path):
+    partial = contract()
+    partial["verifies"] = ["REQ-001", "REQ-002"]
+    build.return_value = context([partial])
+    architecture = tmp_path / "architecture"
+    architecture.mkdir()
+    (architecture / "acceptance-contract-projections.yaml").write_text(
+        """contracts:
+  - contract_id: AC-ROOT-001
+    disposition: shared
+    module_slices:
+      - module_id: Recommendation Module
+        requirements: [REQ-001]
+""",
+        encoding="utf-8",
+    )
+    derive_args = args(tmp_path)
+    derive_args.architecture_package = str(architecture)
+
+    assert run_derive_mode(derive_args) == EXIT_SUCCESS
+    text = (tmp_path / "derived.md").read_text(encoding="utf-8")
+    assert "contract_projection:Recommendation Module:shared" in text
 
 
 @patch("prd_flow.main.build_derive_context")
