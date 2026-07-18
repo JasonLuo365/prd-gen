@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Leaf Gate Formal Decision",
+  "type": "object",
+  "required": ["schema_version", "run_id", "project_id", "node_id", "parent_node_id", "artifact_id", "artifact_type", "created_at", "generator", "status", "input_artifacts", "requirement_ids", "decision", "confidence", "rationale", "evidence_refs", "triggered_rules", "complexity_metrics", "risk_metrics", "mocktest_summary", "proposed_children", "warnings"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "run_id": {"type": ["string", "null"]},
+    "project_id": {"type": ["string", "null"]},
+    "node_id": {"type": "string"},
+    "parent_node_id": {"type": ["string", "null"]},
+    "artifact_id": {"type": "string"},
+    "artifact_type": {"const": "leaf_gate_decision"},
+    "created_at": {"type": "string"},
+    "generator": {"const": "leaf-gate"},
+    "status": {"enum": ["CONTINUE_LAYERING", "STOP_LAYERING", "ERROR"]},
+    "input_artifacts": {"type": "array"},
+    "requirement_ids": {"type": "array", "items": {"type": "string"}},
+    "decision": {"enum": ["CONTINUE_LAYERING", "STOP_LAYERING", "ERROR"]},
+    "confidence": {"type": ["number", "null"]},
+    "rationale": {"type": "array"},
+    "evidence_refs": {"type": "array"},
+    "triggered_rules": {"type": "array", "items": {"type": "string"}},
+    "complexity_metrics": {"type": "object"},
+    "risk_metrics": {"type": "object"},
+    "mocktest_summary": {"type": "object"},
+    "proposed_children": {"type": "array", "items": {"$ref": "#/$defs/child"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "child": {
+      "type": "object",
+      "required": ["child_node_id", "name", "responsibility", "requirement_ids", "decomposition_rationale", "expected_interfaces", "priority"],
+      "properties": {
+        "child_node_id": {"type": "string"}, "name": {"type": "string"}, "responsibility": {"type": "string"},
+        "requirement_ids": {"type": "array", "items": {"type": "string"}}, "decomposition_rationale": {"type": "string"},
+        "expected_interfaces": {"type": "array"}, "priority": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"decision": {"const": "CONTINUE_LAYERING"}}}, "then": {"properties": {"proposed_children": {"minItems": 1}}}},
+    {"if": {"properties": {"decision": {"enum": ["STOP_LAYERING", "ERROR"]}}}, "then": {"properties": {"proposed_children": {"maxItems": 0}}}}
+  ],
+  "additionalProperties": false
+}

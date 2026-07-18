@@ -1,0 +1,29 @@
+{
+  "common": {
+    "schema_version": "1.0",
+    "run_id": "fixture-run",
+    "project_id": "fixture-project",
+    "node_id": "fixture-node",
+    "parent_node_id": "root",
+    "created_at": "2026-01-01T00:00:00Z",
+    "generator": "fixture",
+    "status": "PASS",
+    "input_artifacts": [],
+    "requirement_ids": ["REQ-001", "REQ-002"]
+  },
+  "artifacts": {
+    "prd.json": {"artifact_id": "prd:fixture-node", "artifact_type": "prd", "depth": 0, "max_depth": 4, "node_history": [], "requirements": ["REQ-001", "REQ-002"]},
+    "architecture.json": {"artifact_id": "architecture:fixture-node", "artifact_type": "architecture", "components": ["upload"], "interfaces": ["upload-api"], "dependencies": ["object-store"], "depth": 1, "complexity": 3, "risks": []},
+    "testcases.json": {"artifact_id": "testcases:fixture-node", "artifact_type": "testcases", "testcases": [{"id": "TC-001", "requirement_ids": ["REQ-001"], "status": "PASS"}, {"id": "TC-002", "requirement_ids": ["REQ-002"], "status": "PASS"}]},
+    "mocktest_report.json": {"artifact_id": "mocktest:fixture-node", "artifact_type": "mocktest_report", "defects": []}
+  },
+  "cases": {
+    "simple_leaf": {"expected_decision": "STOP_LAYERING", "overrides": {}},
+    "complex_node": {"expected_decision": "CONTINUE_LAYERING", "overrides": {"architecture.json": {"components": ["ingest", "validate", "persist", "notify", "audit", "recover", "report"]}}},
+    "mocktest_failure": {"expected_decision": "ERROR", "overrides": {"mocktest_report.json": {"status": "FAIL"}}},
+    "missing_evidence": {"expected_decision": "ERROR", "remove": ["mocktest_report.json"]},
+    "maximum_depth": {"expected_decision": "ERROR", "overrides": {"prd.json": {"depth": 4}, "architecture.json": {"components": ["ingest", "validate", "persist", "notify", "audit", "recover", "report"]}}},
+    "threshold_boundary": {"expected_decision": "STOP_LAYERING", "overrides": {"architecture.json": {"components": ["one", "two", "three", "four", "five", "six"], "complexity": 6}}},
+    "conflicting_rules": {"expected_decision": "CONTINUE_LAYERING", "overrides": {"architecture.json": {"components": ["one", "two", "three", "four", "five", "six", "seven"], "interfaces": ["i1", "i2", "i3", "i4", "i5", "i6", "i7"]}, "mocktest_report.json": {"defects": [{"id": "D-001", "severity": "critical"}]}}}
+  }
+}

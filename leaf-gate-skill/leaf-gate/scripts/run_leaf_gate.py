@@ -9,14 +9,26 @@ deterministic checks only; semantic judgement still belongs to the LLM judge.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_THRESHOLDS = {
+    "max_requirements": 8,
+    "max_components": 6,
+    "max_interfaces": 6,
+    "max_dependencies": 8,
+    "max_architecture_depth": 4,
+    "max_complexity": 12,
+    "max_risks": 3,
+    "max_recursion_depth": 4,
+    "max_mock_defects": 0,
+    "max_mock_critical_defects": 0,
     "leaf_score_pass": 10,
     "leaf_score_warn": 20,
     "max_scenario_points": 10,
@@ -40,6 +52,14 @@ CRITERIA = [
 ]
 
 FINAL_DECISIONS = {"CONTINUE_LAYERING", "STOP_LAYERING"}
+FORMAL_DECISIONS = FINAL_DECISIONS | {"ERROR"}
+FORMAL_SCHEMA_VERSION = "1.0"
+COMMON_STATUSES = {"PENDING", "RUNNING", "PASS", "FAIL", "ERROR", "CONTINUE_LAYERING", "STOP_LAYERING", "COMPLETED"}
+LEGACY_STATUS_MAP = {"LEAF_READY": "STOP_LAYERING", "DONE_LAYERING": "STOP_LAYERING", "INPUT_ERROR": "ERROR"}
+COMMON_ARTIFACT_FIELDS = (
+    "schema_version", "run_id", "project_id", "node_id", "parent_node_id", "artifact_id", "artifact_type",
+    "created_at", "generator", "status", "input_artifacts", "requirement_ids",
+)
 
 CURRENT_REQ_ID_RE = r"(?:REQ|NFR|UC|QAS)-(?:[A-Z]+)?\d{3,}"
 TRACE_TAG_ID_RE = r"(?:REQ|NFR|UC|QAS|MET)-(?:[A-Z]+)?\d{3,}"
@@ -1951,6 +1971,347 @@ def write_decision_markdown_files(report: Dict[str, Any], output_dir: Path) -> N
         decomposition.write_text(render_decomposition_markdown(report), encoding="utf-8")
 
 
+STRUCTURED_INPUT_FILES = ("prd.json", "architecture.json", "testcases.json")
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def stable_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def structured_input_present(node_dir: Path) -> bool:
+    return any((node_dir / name).exists() for name in STRUCTURED_INPUT_FILES + ("mocktest_report.json", "leaf_gate_evidence.json"))
+
+
+def read_required_json(node_dir: Path, names: Tuple[str, ...]) -> Tuple[Dict[str, Any], Path]:
+    for name in names:
+        path = node_dir / name
+        if not path.exists():
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise LeafGateInputError("SCHEMA_INCOMPATIBLE", f"{name} is not valid JSON.", {"artifact": name, "error": str(exc)}) from exc
+        if not isinstance(value, dict):
+            raise LeafGateInputError("SCHEMA_INCOMPATIBLE", f"{name} must contain a JSON object.", {"artifact": name})
+        return value, path
+    raise LeafGateInputError("MISSING_REQUIRED_EVIDENCE", f"Missing required artifact: {' or '.join(names)}.", {"expected": list(names)})
+
+
+def item_ids(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    result: List[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            result.append(item)
+        elif isinstance(item, dict):
+            identifier = item.get("id", item.get("name"))
+            if isinstance(identifier, str) and identifier:
+                result.append(identifier)
+    return sorted(set(result))
+
+
+def numeric_metric(payload: Dict[str, Any], name: str, default: int = 0) -> int:
+    value = payload.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", f"{name} must be a non-negative number.", {"field": name, "value": value})
+    return int(value)
+
+
+def validate_identity(artifacts: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    required = ("schema_version", "run_id", "project_id", "node_id")
+    first_name, first = next(iter(artifacts.items()))
+    missing = [field for field in required if first.get(field) in (None, "")]
+    if missing:
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", f"{first_name} lacks required common fields.", {"artifact": first_name, "missing": missing})
+    identity = {field: first[field] for field in required}
+    if identity["schema_version"] != FORMAL_SCHEMA_VERSION:
+        raise LeafGateInputError(
+            "SCHEMA_INCOMPATIBLE",
+            f"Unsupported schema_version {identity['schema_version']!r}; expected {FORMAL_SCHEMA_VERSION!r}.",
+            {"expected_schema_version": FORMAL_SCHEMA_VERSION, "actual_schema_version": identity["schema_version"]},
+        )
+    for name, payload in artifacts.items():
+        absent = [field for field in COMMON_ARTIFACT_FIELDS if field not in payload]
+        invalid_common_types = [field for field in ("input_artifacts", "requirement_ids") if field in payload and not isinstance(payload[field], list)]
+        input_status = str(payload.get("status", "")).upper()
+        invalid_status = input_status not in COMMON_STATUSES and input_status not in LEGACY_STATUS_MAP
+        mismatched = {field: {"expected": identity[field], "actual": payload.get(field)} for field in required if payload.get(field) not in (None, identity[field])}
+        if absent or invalid_common_types or invalid_status or mismatched:
+            raise LeafGateInputError(
+                "ARTIFACT_IDENTITY_MISMATCH",
+                "Structured input artifacts must preserve common fields and have matching run_id, project_id, and node_id.",
+                {"artifact": name, "missing": absent, "invalid_common_types": invalid_common_types, "invalid_status": input_status if invalid_status else None, "mismatched": mismatched},
+            )
+    return identity
+
+
+def normalized_thresholds(thresholds: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(thresholds)
+    for key in (
+        "max_requirements", "max_components", "max_interfaces", "max_dependencies", "max_architecture_depth",
+        "max_complexity", "max_risks", "max_recursion_depth", "max_mock_defects", "max_mock_critical_defects",
+    ):
+        value = normalized.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise LeafGateInputError("CONFIGURATION_ERROR", f"Threshold {key} must be a non-negative number.", {"threshold": key, "value": value})
+        normalized[key] = int(value)
+    confidence = normalized.get("min_llm_confidence", 0.75)
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise LeafGateInputError("CONFIGURATION_ERROR", "min_llm_confidence must be between 0 and 1.")
+    return normalized
+
+
+def rule_children(requirement_ids: List[str], components: List[str], interfaces: List[str], rules: List[str], node_id: str) -> List[Dict[str, Any]]:
+    labels = components or [rule.replace("exceeds-", "").replace("-", " ") for rule in rules]
+    if not labels:
+        labels = ["isolated-responsibility"]
+    children: List[Dict[str, Any]] = []
+    for index, label in enumerate(labels, start=1):
+        clean = re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-") or f"child-{index}"
+        child_requirements = requirement_ids[index - 1 :: len(labels)] or requirement_ids
+        children.append(
+            {
+                "child_node_id": f"{node_id}.{index:02d}-{clean}",
+                "name": str(label),
+                "responsibility": f"Implement and verify the {label} responsibility independently.",
+                "requirement_ids": child_requirements,
+                "decomposition_rationale": f"Triggered rules: {', '.join(rules)}.",
+                "expected_interfaces": [interfaces[(index - 1) % len(interfaces)]] if interfaces else [],
+                "priority": index,
+            }
+        )
+    return children
+
+
+def formal_error_report(error: LeafGateInputError, node_dir: Path) -> Dict[str, Any]:
+    now = utc_timestamp()
+    identity = {"schema_version": FORMAL_SCHEMA_VERSION, "run_id": None, "project_id": None, "node_id": node_dir.name}
+    return {
+        **identity,
+        "parent_node_id": None,
+        "artifact_id": f"leaf-gate-error:{node_dir.name}",
+        "artifact_type": "leaf_gate_decision",
+        "created_at": now,
+        "generator": "leaf-gate",
+        "status": "ERROR",
+        "input_artifacts": [],
+        "requirement_ids": [],
+        "decision": "ERROR",
+        "confidence": None,
+        "rationale": [{"code": error.code, "message": error.message, "details": error.details}],
+        "evidence_refs": [],
+        "triggered_rules": [],
+        "complexity_metrics": {},
+        "risk_metrics": {},
+        "mocktest_summary": {},
+        "proposed_children": [],
+        "warnings": [],
+    }
+
+
+def build_structured_report(node_dir: Path, config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Build the formal Leaf Gate decision from the cross-module JSON contract."""
+    config = load_leaf_gate_config(node_dir, config_path=config_path)
+    thresholds = normalized_thresholds(config.thresholds)
+    prd, prd_path = read_required_json(node_dir, ("prd.json",))
+    architecture, architecture_path = read_required_json(node_dir, ("architecture.json",))
+    testcases, testcases_path = read_required_json(node_dir, ("testcases.json",))
+    mocktest, mocktest_path = read_required_json(node_dir, ("mocktest_report.json", "leaf_gate_evidence.json"))
+    input_payloads = {"prd.json": prd, "architecture.json": architecture, "testcases.json": testcases, mocktest_path.name: mocktest}
+    identity = validate_identity(input_payloads)
+    expected_types = {
+        "prd.json": {"prd"}, "architecture.json": {"architecture"}, "testcases.json": {"testcases"},
+        "mocktest_report.json": {"mocktest_report"}, "leaf_gate_evidence.json": {"leaf_gate_evidence"},
+    }
+    invalid_types = {
+        name: payload.get("artifact_type") for name, payload in input_payloads.items()
+        if str(payload.get("artifact_type")) not in expected_types[name]
+    }
+    if invalid_types:
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", "Structured input artifact_type does not match its contract filename.", {"invalid_artifact_types": invalid_types})
+    compatibility_warnings = [
+        f"legacy_status_mapped:{name}:{str(payload['status']).upper()}->{LEGACY_STATUS_MAP[str(payload['status']).upper()]}"
+        for name, payload in input_payloads.items() if str(payload["status"]).upper() in LEGACY_STATUS_MAP
+    ]
+
+    if not isinstance(prd.get("node_history"), list):
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", "prd.json must contain node_history as an array.", {"artifact": "prd.json", "field": "node_history"})
+    requirement_ids = item_ids(prd.get("requirements", prd.get("requirement_ids", [])))
+    if not requirement_ids:
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", "prd.json must declare at least one requirement id.", {"artifact": "prd.json"})
+    scenarios = testcases.get("testcases", testcases.get("scenarios", []))
+    if not isinstance(scenarios, list) or not scenarios:
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", "testcases.json must declare at least one testcase.", {"artifact": "testcases.json"})
+    covered = set(item_ids(testcases.get("requirement_ids", [])))
+    unverified = 0
+    for scenario in scenarios:
+        if isinstance(scenario, dict):
+            covered.update(item_ids(scenario.get("requirement_ids", [])))
+            if str(scenario.get("status", "")).upper() not in {"PASS", "COMPLETED"}:
+                unverified += 1
+        else:
+            unverified += 1
+    uncovered = sorted(set(requirement_ids) - covered)
+    if uncovered or unverified:
+        raise LeafGateInputError("UPSTREAM_VALIDATION_INCOMPLETE", "Requirements or testcase scenarios are not fully verified.", {"uncovered_requirements": uncovered, "unverified_scenarios": unverified})
+
+    mock_status = str(mocktest.get("status", "")).upper()
+    if mock_status != "PASS":
+        raise LeafGateInputError("MOCKTEST_NOT_PASS", "Mocktest evidence must have status PASS before Leaf Gate can decide.", {"status": mock_status or None})
+    depth = numeric_metric(prd, "depth", numeric_metric(prd, "current_depth", 0))
+    node_max_depth = numeric_metric(prd, "max_depth")
+    components = item_ids(architecture.get("components", []))
+    interfaces = item_ids(architecture.get("interfaces", architecture.get("contracts", [])))
+    dependencies = item_ids(architecture.get("dependencies", []))
+    architecture_depth = numeric_metric(architecture, "depth", 0)
+    complexity = numeric_metric(architecture, "complexity", len(components) + len(interfaces) + len(dependencies))
+    risks = architecture.get("risks", [])
+    risk_count = len(risks) if isinstance(risks, list) else numeric_metric(architecture, "risk_count", 0)
+    defects = mocktest.get("defects", [])
+    if not isinstance(defects, list):
+        raise LeafGateInputError("SCHEMA_INCOMPATIBLE", "mocktest defects must be a list.", {"artifact": mocktest_path.name})
+    critical = sum(1 for defect in defects if isinstance(defect, dict) and str(defect.get("severity", "")).lower() in {"critical", "blocker"})
+    triggered_rules = [
+        label for label, value, limit in (
+            ("requirements-exceed-threshold", len(requirement_ids), thresholds["max_requirements"]),
+            ("components-exceed-threshold", len(components), thresholds["max_components"]),
+            ("interfaces-exceed-threshold", len(interfaces), thresholds["max_interfaces"]),
+            ("dependencies-exceed-threshold", len(dependencies), thresholds["max_dependencies"]),
+            ("architecture-depth-exceed-threshold", architecture_depth, thresholds["max_architecture_depth"]),
+            ("complexity-exceed-threshold", complexity, thresholds["max_complexity"]),
+            ("risks-exceed-threshold", risk_count, thresholds["max_risks"]),
+            ("mock-defects-exceed-threshold", len(defects), thresholds["max_mock_defects"]),
+            ("mock-critical-defects-exceed-threshold", critical, thresholds["max_mock_critical_defects"]),
+        ) if value > limit
+    ]
+    effective_max_depth = min(node_max_depth, thresholds["max_recursion_depth"])
+    depth_limited = depth >= effective_max_depth
+    now = utc_timestamp()
+    input_paths = (prd_path, architecture_path, testcases_path, mocktest_path)
+    input_artifacts = [{"artifact_type": path.stem, "path": path.name, "sha256": stable_hash(json.loads(path.read_text(encoding="utf-8")))} for path in input_paths]
+    metrics = {
+        "requirement_count": len(requirement_ids), "component_count": len(components), "interface_count": len(interfaces),
+        "dependency_count": len(dependencies), "architecture_depth": architecture_depth, "current_depth": depth,
+        "node_max_depth": node_max_depth, "configured_max_recursion_depth": thresholds["max_recursion_depth"], "effective_max_depth": effective_max_depth,
+        "complexity": complexity, "uncovered_requirement_count": len(uncovered), "unverified_scenario_count": unverified,
+    }
+    risk_metrics = {"risk_count": risk_count, "mock_defect_count": len(defects), "mock_critical_defect_count": critical}
+    common = {
+        **identity, "parent_node_id": prd.get("parent_node_id"), "artifact_id": f"leaf-gate:{identity['node_id']}",
+        "artifact_type": "leaf_gate_decision", "created_at": now, "generator": "leaf-gate", "input_artifacts": input_artifacts,
+        "requirement_ids": requirement_ids, "evidence_refs": input_artifacts, "triggered_rules": triggered_rules,
+        "complexity_metrics": metrics, "risk_metrics": risk_metrics,
+        "mocktest_summary": {"status": mock_status, "defect_count": len(defects), "critical_defect_count": critical, "artifact": mocktest_path.name},
+        "warnings": list(config.warnings) + compatibility_warnings,
+    }
+    if depth_limited and triggered_rules:
+        return {
+            **common, "status": "ERROR", "decision": "ERROR", "confidence": 1.0,
+            "rationale": [{"code": "MAX_DEPTH_REACHED", "message": "The node still requires decomposition but maximum recursion depth is reached.", "evidence": triggered_rules}],
+            "proposed_children": [], "warnings": common["warnings"] + ["depth_limit_reached", "manual_intervention_required"],
+        }
+    if triggered_rules:
+        children = rule_children(requirement_ids, components, interfaces, triggered_rules, identity["node_id"])
+        return {
+            **common, "status": "CONTINUE_LAYERING", "decision": "CONTINUE_LAYERING", "confidence": 1.0,
+            "rationale": [{"code": "DECOMPOSITION_REQUIRED", "message": "Configured complexity or risk thresholds require another layer.", "evidence": triggered_rules}],
+            "proposed_children": children,
+        }
+    return {
+        **common, "status": "STOP_LAYERING", "decision": "STOP_LAYERING", "confidence": 1.0,
+        "rationale": [
+            {"code": "SINGLE_RESPONSIBILITY", "message": "No configured complexity rule requires a further responsibility split.", "evidence": ["triggered_rules=[]"]},
+            {"code": "INTERFACES_CLEAR", "message": "Architecture interface and dependency counts are within the configured bounds.", "evidence": {"interface_count": len(interfaces), "dependency_count": len(dependencies)}},
+            {"code": "REQUIREMENTS_VERIFIABLE", "message": "Every active requirement is covered by a passing testcase.", "evidence": {"uncovered_requirement_count": len(uncovered), "unverified_scenario_count": unverified}},
+            {"code": "ARCHITECTURE_RISK_ACCEPTABLE", "message": "Architecture and Mock risk metrics are within the configured bounds.", "evidence": risk_metrics},
+            {"code": "MOCKTEST_READY", "message": "Mocktest passed with no blocking defect threshold violation.", "evidence": {"status": mock_status, "defect_count": len(defects), "critical_defect_count": critical}},
+        ],
+        "proposed_children": [],
+    }
+
+
+def render_formal_decision_markdown(report: Dict[str, Any]) -> str:
+    lines = ["# Leaf Gate Decision", "", f"- Node: `{report.get('node_id')}`", f"- Decision: `{report.get('decision')}`", f"- Confidence: `{report.get('confidence')}`", "", "## Rationale", ""]
+    for item in report.get("rationale", []):
+        lines.append(f"- {item.get('code')}: {item.get('message')}")
+    lines.extend(["", "## Metrics", ""])
+    for key, value in report.get("complexity_metrics", {}).items():
+        lines.append(f"- `{key}`: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def build_annotation_template(report: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "node_id": report.get("node_id"),
+        "input_summary": {
+            "requirement_ids": report.get("requirement_ids", []), "complexity_metrics": report.get("complexity_metrics", {}),
+            "risk_metrics": report.get("risk_metrics", {}), "mocktest_summary": report.get("mocktest_summary", {}),
+            "evidence_refs": report.get("evidence_refs", []),
+        },
+        "label_options": ["CONTINUE_LAYERING", "STOP_LAYERING", "CANNOT_JUDGE"],
+        "human_label": None, "rationale": "", "annotator_id": None,
+    }
+
+
+def validate_formal_report(report: Dict[str, Any]) -> None:
+    required = {
+        "schema_version", "run_id", "project_id", "node_id", "parent_node_id", "artifact_id", "artifact_type",
+        "created_at", "generator", "status", "input_artifacts", "requirement_ids", "decision", "confidence",
+        "rationale", "evidence_refs", "triggered_rules", "complexity_metrics", "risk_metrics", "mocktest_summary",
+        "proposed_children", "warnings",
+    }
+    missing = sorted(required - set(report))
+    if missing:
+        raise ValueError(f"Formal Leaf Gate report is missing fields: {', '.join(missing)}")
+    if report["decision"] not in FORMAL_DECISIONS or report["status"] not in FORMAL_DECISIONS:
+        raise ValueError("Formal Leaf Gate report has an invalid decision or status.")
+    if report["decision"] != report["status"]:
+        raise ValueError("Formal Leaf Gate decision and status must be identical.")
+    child_required = {"child_node_id", "name", "responsibility", "requirement_ids", "decomposition_rationale", "expected_interfaces", "priority"}
+    for child in report["proposed_children"]:
+        if not isinstance(child, dict) or child_required - set(child):
+            raise ValueError("Formal Leaf Gate proposed_children violates the child contract.")
+    if report["decision"] == "CONTINUE_LAYERING" and not report["proposed_children"]:
+        raise ValueError("CONTINUE_LAYERING requires at least one proposed child.")
+    if report["decision"] != "CONTINUE_LAYERING" and report["proposed_children"]:
+        raise ValueError("Only CONTINUE_LAYERING may emit proposed children.")
+
+
+def write_formal_artifacts(report: Dict[str, Any], output_dir: Path, started_at: str) -> None:
+    validate_formal_report(report)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    decision_path = output_dir / "leaf_gate_decision.json"
+    decision_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "leaf_gate_decision.md").write_text(render_formal_decision_markdown(report), encoding="utf-8")
+    metrics = {
+        "schema_version": report.get("schema_version"), "run_id": report.get("run_id"), "project_id": report.get("project_id"), "node_id": report.get("node_id"),
+        "parent_node_id": report.get("parent_node_id"), "artifact_id": f"leaf-gate-metrics:{report.get('node_id')}", "artifact_type": "leaf_gate_metrics",
+        "created_at": report.get("created_at"), "generator": "leaf-gate", "status": report.get("status"),
+        "input_artifacts": report.get("input_artifacts", []), "requirement_ids": report.get("requirement_ids", []),
+        "complexity_metrics": report.get("complexity_metrics", {}), "risk_metrics": report.get("risk_metrics", {}), "triggered_rules": report.get("triggered_rules", []),
+    }
+    (output_dir / "leaf_gate_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    execution_log = {
+        "schema_version": report.get("schema_version"), "run_id": report.get("run_id"), "project_id": report.get("project_id"), "node_id": report.get("node_id"),
+        "parent_node_id": report.get("parent_node_id"), "artifact_id": f"leaf-gate-execution-log:{report.get('node_id')}", "artifact_type": "execution_log",
+        "created_at": utc_timestamp(), "generator": "leaf-gate", "status": report.get("status"), "input_artifacts": report.get("input_artifacts", []), "requirement_ids": report.get("requirement_ids", []),
+        "module": "leaf-gate", "start_time": started_at, "end_time": utc_timestamp(), "duration_ms": None,
+        "output_artifacts": ["leaf_gate_decision.json", "leaf_gate_decision.md", "leaf_gate_metrics.json", "leaf_gate_annotation_template.json"],
+        "input_hash": stable_hash(report.get("input_artifacts", [])), "output_hash": stable_hash(report), "model": None, "model_parameters": None,
+        "random_seed": None, "retry_count": 0, "token_usage": None, "estimated_cost": None, "human_interventions": [],
+        "warning_count": len(report.get("warnings", [])), "error_type": report.get("rationale", [{}])[0].get("code") if report.get("status") == "ERROR" else None,
+        "error_message": report.get("rationale", [{}])[0].get("message") if report.get("status") == "ERROR" else None,
+    }
+    (output_dir / "execution_log.json").write_text(json.dumps(execution_log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "leaf_gate_annotation_template.json").write_text(json.dumps(build_annotation_template(report), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Leaf Gate static checks for a PRD node.")
     parser.add_argument("node_dir", type=Path, help="Directory containing PRD node artifacts.")
@@ -1968,6 +2329,32 @@ def main() -> int:
 
     if not args.node_dir.exists() or not args.node_dir.is_dir():
         raise SystemExit(f"Node directory does not exist: {args.node_dir}")
+
+    if structured_input_present(args.node_dir):
+        started_at = utc_timestamp()
+        try:
+            report = build_structured_report(args.node_dir, config_path=args.config)
+        except LeafGateInputError as exc:
+            report = formal_error_report(exc, args.node_dir)
+        except Exception as exc:  # Preserve an inspectable failure artifact and a non-success exit code.
+            report = formal_error_report(LeafGateInputError("RUNTIME_ERROR", "Leaf Gate encountered an unhandled runtime error.", {"error": str(exc)}), args.node_dir)
+        output_dir = args.output.parent if args.output else args.node_dir
+        write_formal_artifacts(report, output_dir, started_at)
+        payload = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.write_text(payload + "\n", encoding="utf-8")
+        else:
+            print(payload)
+        if report["status"] == "ERROR":
+            code = report.get("rationale", [{}])[0].get("code")
+            if code in {"SCHEMA_INCOMPATIBLE", "ARTIFACT_IDENTITY_MISMATCH"}:
+                return 5
+            if code == "CONFIGURATION_ERROR":
+                return 3
+            if code == "RUNTIME_ERROR":
+                return 4
+            return 2
+        return 0
 
     try:
         report = build_report(

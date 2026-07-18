@@ -1,0 +1,15 @@
+{
+  "thresholds": {
+    "max_requirements": 8,
+    "max_components": 6,
+    "max_interfaces": 6,
+    "max_dependencies": 8,
+    "max_architecture_depth": 4,
+    "max_complexity": 12,
+    "max_risks": 3,
+    "max_recursion_depth": 4,
+    "max_mock_defects": 0,
+    "max_mock_critical_defects": 0,
+    "min_llm_confidence": 0.75
+  }
+}
